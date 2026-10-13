@@ -136,6 +136,17 @@ function rateAttempt(u, p, solved, now) {
     p, [{ rating: u.rating, rd: u.rd, score: solved ? 0 : 1 }],
     { periods: periodsSince(p.ratedAt, now), minRd: MIN_RD_PUZZLE }
   );
+
+  
+  const deltaRating = newU.rating - u.rating;
+  if (solved) {
+    console.log('Увеличиваем рейтинг игрока на 25% больше');
+    newU.rating = u.rating + deltaRating * 1.25; 
+  } else {
+    console.log('Смягчаем падение рейтинга игрока на 25%');
+    newU.rating = u.rating + deltaRating * 0.75; 
+  }
+
   newU.rating = Math.max(USER_MIN_RATING, newU.rating);
   newP.rating = Math.min(PUZZLE_MAX_RATING, Math.max(PUZZLE_MIN_RATING, newP.rating));
   return { user: newU, puzzle: newP };
