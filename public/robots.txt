@@ -1,4 +1,13 @@
 User-agent: *
 Allow: /
 
+# Служебные эндпоинты — не для поиска
+Disallow: /api/
+
+# Приватные страницы (/inbox, /settings, /report, /online, /followers, /following)
+# НЕ закрываем здесь: они помечены заголовком X-Robots-Tag: noindex.
+# Если закрыть их в robots.txt, Google не увидит noindex.
+
+# JS и CSS не закрываем — Google должен уметь отрисовать страницы
+
 Sitemap: https://chesshome.pro/sitemap.xml

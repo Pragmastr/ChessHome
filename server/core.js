@@ -1,19 +1,29 @@
 // ═══════════════════════════════════════════════════════════════
 //  core.js — общее состояние сервера
 // ═══════════════════════════════════════════════════════════════
-// Всё, от чего зависят и routes.js, и sockets.js: подключение к БД,
-// Express-приложение (app), Socket.IO (io), кэши в памяти (юзеры,
-// чаты, турниры, клубы...), константы и все хелперы/миддлвары.
+// Системные синглтоны (app, io, server, env), общие кэши и хелперы.
+// Доменная логика вынесена в сервисные модули:
+//   server/db.js                          — пул PostgreSQL, db(), транзакции
+//   server/services/game.service.js       — партии, часы, финалы, рейтинг
+//   server/services/tournament.service.js — турниры, жеребьёвка, тик
+//   server/services/chat.service.js       — история чатов (глобал/клубы/турниры)
+//   server/utils.js                       — серверные хелперы (escapeHtml)
 //
-// routes.js и sockets.js просто делают:
+// routes.js и sockets.js делают:
 //   const { app, io, db, ... } = require('./core');
 // и используют эти же самые объекты — состояние по-настоящему общее,
-// это НЕ копии.
+// это НЕ копии. Экспорт внизу файла дополняет module.exports
+// через Object.assign — ссылки у всех общие.
 // ═══════════════════════════════════════════════════════════════
 
 const express = require('express');
 
 const http    = require('http');
+
+// crypto — для constant-time сравнения секретов (durka/worker ключи),
+// чтобы исключить timing-атаки на строковое сравнение (см. durkaKeyMiddleware
+// ниже и worker_auth в sockets.js).
+const crypto  = require('crypto');
 
 const { Server } = require('socket.io');
 
@@ -23,7 +33,16 @@ const { Server } = require('socket.io');
 // экономит заметно, особенно под 100 одновременных клиентов.
 const compression = require('compression');
 
-const bcrypt  = require('bcryptjs');
+// Нативный bcrypt считает хеш в пуле потоков libuv и НЕ блокирует event loop.
+// bcryptjs — чистый JS: каждый hash/compare занимает единственный поток на десятки мс
+// (часы партий и сокеты в это время стоят). Если bcrypt не установлен — работаем на bcryptjs.
+let bcrypt;
+try {
+  bcrypt = require('bcrypt');
+} catch (_) {
+  bcrypt = require('bcryptjs');
+  console.warn('⚠️  Пакет bcrypt не установлен — используется bcryptjs (блокирует event loop). Установите: npm i bcrypt');
+}
 
 const jwt     = require('jsonwebtoken');
 
@@ -35,147 +54,76 @@ const fs      = require('fs');
 
 const cors    = require('cors');
 
-const { Pool } = require('pg');
-
 // npm install multer — обработка multipart/form-data для загрузки обложек новостей.
 const multer  = require('multer');
 
+// ── PostgreSQL: пул и хелперы запросов — в server/db.js ────────
+const { pool, db, withTransaction } = require('./db');
+
+// ── Сервисные модули (см. шапку файла) ────────────────────────
+const chatService       = require('./services/chat.service');
+const gameService       = require('./services/game.service');
+const tournamentService = require('./services/tournament.service');
+
+const {
+  globalChat,
+  loadChat,
+  saveChatMsg,
+  deleteChatMsg,
+  CLUB_CHAT_MAX,
+  clubChats,
+  clubChatBans,
+  getClubChat,
+  getClubChatBans,
+  loadClubChats,
+  saveClubChatMsg,
+  deleteClubChatMsgsByUser,
+  TOURNAMENT_CHAT_MAX,
+  TOURNAMENT_CHAT_READONLY_AFTER_MS,
+  tournamentChats,
+  tournamentChatMutes,
+  getTournamentChat,
+  getTournamentChatMutes,
+  isTournamentChatOpen,
+  loadTournamentChats,
+  saveTournamentChatMsg,
+  wipeTournamentChatMsgsByUser,
+  removeUserChatMessages,
+} = chatService;
+
+const {
+  activeGames,
+  tournamentGames,
+  liveClock,
+  hasFullMove,
+  endGameAuthoritative,
+  recordGame,
+  updateStats,
+  startGame,
+  serverChess,
+} = gameService;
+
+const {
+  tournaments,
+  loadTournaments,
+  saveTournament,
+  deleteTournamentFromDB,
+  MAX_INTERCLUB_TEAMS,
+  extractClubIdFromLink,
+  resolveInterclubTeams,
+  getTournamentStatus,
+  getInterclubTeamsInfo,
+  computeTeamStandings,
+  sanitizeTournament,
+  REMATCH_GRACE_PERIOD,
+  tryPairTournamentPlayers,
+  FIRST_MOVE_TIMEOUT,
+  startTournamentGame,
+  finishTournamentGame,
+  anticheatBan,
+} = tournamentService;
+
 require('dotenv').config();
-
-
-// ── PostgreSQL ────────────────────────────────────────────────
-const pool = new Pool({ connectionString: process.env.DATABASE_URL });
-
-
-async function db(sql, params = []) {
-  const client = await pool.connect();
-  try {
-    return await client.query(sql, params);
-  } finally {
-    client.release();
-  }
-}
-
-
-// ── Атомарные транзакции ──────────────────────────────────────
-// В отличие от db(), который берёт НОВОЕ соединение на каждый вызов
-// (а значит BEGIN/INSERT/UPDATE/COMMIT через db() выполняются на разных
-// соединениях и НЕ являются одной транзакцией), withTransaction держит
-// ОДНО соединение на весь колбэк: BEGIN, все запросы и COMMIT/ROLLBACK
-// идут через один и тот же client.
-//
-// Использование:
-//   await withTransaction(async (client) => {
-//     await client.query('INSERT INTO ...', [...]);
-//     await client.query('UPDATE ...', [...]);
-//   });
-// При исключении внутри колбэка — автоматический ROLLBACK, ошибка
-// пробрасывается наверх. client.release() вызывается всегда.
-async function withTransaction(fn) {
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    const result = await fn(client);
-    await client.query('COMMIT');
-    return result;
-  } catch (e) {
-    try { await client.query('ROLLBACK'); } catch (_) {}
-    throw e;
-  } finally {
-    client.release();
-  }
-}
-
-
-// ── Email верификация ─────────────────────────────────────────
-const { Resend } = require('resend');
-
-
-const pendingPasswordChanges = new Map();
-
-const pendingDeletions = new Map();
-
-// 2FA: код входа, отправленный на почту, ждёт подтверждения перед выдачей jwt.
-const pendingLogins = new Map();
-
-// Не даём спамить письма при повторных заходах/выходах — пока предыдущий
-// код ещё "свежий", новый не шлём, просто говорим, что он уже отправлен.
-const TWO_FA_RESEND_COOLDOWN_MS = 30 * 1000;
-
-const twoFactorLastSent = new Map();
- // username_low -> timestamp
-
-setInterval(() => {
-  const now = Date.now();
-  for (const [code, d] of pendingPasswordChanges.entries()) {
-    if (now > d.expiresAt) pendingPasswordChanges.delete(code);
-  }
-  for (const [code, d] of pendingDeletions.entries()) {
-    if (now > d.expiresAt) pendingDeletions.delete(code);
-  }
-  for (const [code, d] of pendingLogins.entries()) {
-    if (now > d.expiresAt) pendingLogins.delete(code);
-  }
-}, 10 * 60 * 1000);
-
-
-async function sendPasswordChangeEmail(email, code) {
-  const resend = new Resend(process.env.RESEND_API_KEY);
-  const { error } = await resend.emails.send({
-    from: 'Chess Home <noreply@chesshome.pro>',
-    to: email,
-    subject: 'Смена пароля — Chess Home',
-    html: `
-      <div style="font-family:sans-serif;max-width:400px;margin:0 auto;padding:32px;background:#1a1a2e;color:#e0e0e0;border-radius:12px">
-        <h2 style="color:#7c9cbf;margin-top:0">♟️ Chess Home</h2>
-        <p>Вы запросили смену пароля. Ваш код подтверждения:</p>
-        <div style="font-size:36px;font-weight:900;letter-spacing:10px;color:#fff;background:#0f0f1e;padding:20px;border-radius:8px;text-align:center">${code}</div>
-        <p style="color:#888;font-size:13px;margin-top:24px">Код действует 15 минут. Если вы не запрашивали смену пароля — немедленно смените пароль или обратитесь в поддержку.</p>
-      </div>
-    `
-  });
-  if (error) throw new Error(error.message);
-}
-
-
-async function sendTwoFactorLoginEmail(email, code) {
-  const resend = new Resend(process.env.RESEND_API_KEY);
-  const { error } = await resend.emails.send({
-    from: 'Chess Home <noreply@chesshome.pro>',
-    to: email,
-    subject: 'Код входа — Chess Home',
-    html: `
-      <div style="font-family:sans-serif;max-width:400px;margin:0 auto;padding:32px;background:#1a1a2e;color:#e0e0e0;border-radius:12px">
-        <h2 style="color:#7c9cbf;margin-top:0">♟️ Chess Home</h2>
-        <p>Кто-то (надеемся, что вы) пытается войти в ваш аккаунт. Код подтверждения входа:</p>
-        <div style="font-size:36px;font-weight:900;letter-spacing:10px;color:#fff;background:#0f0f1e;padding:20px;border-radius:8px;text-align:center">${code}</div>
-        <p style="color:#888;font-size:13px;margin-top:24px">Код действует 10 минут. Если это были не вы — просто проигнорируйте письмо, пароль остаётся прежним.</p>
-      </div>
-    `
-  });
-  if (error) throw new Error(error.message);
-}
-
-
-async function sendDeleteAccountEmail(email, username, code) {
-  const resend = new Resend(process.env.RESEND_API_KEY);
-  const { error } = await resend.emails.send({
-    from: 'Chess Home <noreply@chesshome.pro>',
-    to: email,
-    subject: 'Удаление аккаунта — Chess Home',
-    html: `
-      <div style="font-family:sans-serif;max-width:400px;margin:0 auto;padding:32px;background:#1a1a2e;color:#e0e0e0;border-radius:12px">
-        <h2 style="color:#c0392b;margin-top:0">⚠️ Chess Home — Удаление аккаунта</h2>
-        <p>Поступил запрос на <strong>безвозвратное удаление</strong> аккаунта <strong>${username}</strong>.</p>
-        <p>Код подтверждения:</p>
-        <div style="font-size:36px;font-weight:900;letter-spacing:10px;color:#fff;background:#0f0f1e;padding:20px;border-radius:8px;text-align:center">${code}</div>
-        <p style="color:#e74c3c;font-size:13px;margin-top:16px">⚠️ После удаления аккаунт восстановить невозможно. Ник будет навсегда заблокирован для регистрации.</p>
-        <p style="color:#888;font-size:13px">Если вы не запрашивали удаление — проигнорируйте это письмо. Код действует 15 минут.</p>
-      </div>
-    `
-  });
-  if (error) throw new Error(error.message);
-}
 
 
 // ── Фильтр матерных ников ─────────────────────────────────────
@@ -199,11 +147,6 @@ function nickHasBadWord(username) {
 
 // ── Белый список эмодзи профиля ───────────────────────────────
 // ВАЖНО: это единственная надёжная защита от подмены эмодзи
-// произвольным текстом. Раньше проверялся только чёрный список
-// ("запрещённые" эмодзи) — любой юзер, дёрнув /api/user/emoji
-// напрямую (мимо UI, через devtools/curl), мог отправить любую
-// строку. Теперь допускается ТОЛЬКО то, что есть в этом списке
-// (тот же набор, что показан в /settings).
 const PROFILE_EMOJIS = new Set([
   '😀','😃','😄','😁','😆','😅','😂','🤣','😊','😇','🙂','🙃','😉','😌','😍','🥰',
   '😘','😗','😙','😚','😋','😛','😝','😜','🤪','🤨','🧐','🤓','😎','🤩','🥳','😏',
@@ -274,11 +217,6 @@ const DEVICE_COOKIE_OPTS = { httpOnly: true, secure: isProd, sameSite: 'lax', ma
 
 
 // ── Device ID выдаётся и хранится ТОЛЬКО сервером (HttpOnly) ──
-// Раньше клиент сам генерировал и хранил ch_device_id в localStorage,
-// откуда его можно было прочитать (XSS) или просто удалить/подделать
-// перед регистрацией нового аккаунта. Теперь id выпускает сервер
-// и кладёт в HttpOnly-cookie — JS на странице не может ни прочитать,
-// ни стереть его вручную.
 app.use((req, res, next) => {
   let deviceId = req.cookies.ch_device_id;
   if (!deviceId) {
@@ -314,17 +252,26 @@ app.set('trust proxy', 2);
 class RateLimiter {
   constructor(windowMs, max) {
     this.windowMs = windowMs; this.max = max; this.store = new Map();
+    this.maxEntries = 200_000;
     setInterval(() => {
       const now = Date.now();
       for (const [ip, data] of this.store.entries()) {
         if (now > data.resetAt) this.store.delete(ip);
       }
-    }, 60000);
+    }, 60000).unref();
   }
   check(ip) {
     const now = Date.now();
     let data = this.store.get(ip);
-    if (!data || now > data.resetAt) { data = { count: 0, resetAt: now + this.windowMs }; this.store.set(ip, data); }
+    if (!data || now > data.resetAt) {
+      // Вытеснение при переполнении — ДО вставки новой записи.
+      if (!data && this.store.size >= this.maxEntries) {
+        const oldest = this.store.keys().next().value;
+        if (oldest !== undefined) this.store.delete(oldest);
+      }
+      data = { count: 0, resetAt: now + this.windowMs };
+      this.store.set(ip, data);
+    }
     data.count++;
     return { allowed: data.count <= this.max, count: data.count, max: this.max };
   }
@@ -333,7 +280,7 @@ class RateLimiter {
 
 const limiterGeneral   = new RateLimiter(60_000,  10000);
 
-const limiterAuth      = new RateLimiter(60_000,    1000);
+const limiterAuth      = new RateLimiter(60_000,    20);
 
 const limiterStrict    = new RateLimiter(60_000,    900);
 
@@ -343,10 +290,6 @@ const limiterRegStrict = new RateLimiter(3_600_000, 1000);
 
 
 // ── PUZZLE STORM: серверный трекинг забегов ─────────────────────
-// Score раньше принимался от клиента как есть — можно было прислать
-// в консоли браузера {score: 20000} и получить любой рекорд. Теперь
-// сервер сам засекает старт забега (runId) и на финише проверяет,
-// что результат физически достижим за прошедшее время.
 const STORM_DURATION_MS   = 180_000;
         // должно совпадать со STORM_DURATION в storm.html
 const STORM_MAX_TIME_MS   = STORM_DURATION_MS * 1.5 + 20_000;
@@ -374,7 +317,14 @@ async function loadBansFromDB() {
     for (const r of ips.rows)  if (!isLocalIP(r.ip)) bannedIPs.add(r.ip);
     for (const r of devs.rows) bannedDevices.add(r.device_id);
     console.log(`[Bans] Загружено: ${bannedIPs.size} IP, ${bannedDevices.size} устройств`);
-  } catch (e) { console.error('[Bans] load error:', e.message); }
+  } catch (e) {
+    console.error('[Bans] load error:', e.message);
+    if (/relation .* does not exist/i.test(e.message || '')) {
+      console.error('[Bans] КРИТИЧНО: таблицы ip_bans/device_bans не существуют. ' +
+        'Примените базовую схему: node migrations/migrate.js (см. migrations/001_base_schema.sql). ' +
+        'Сервер продолжит работу с ПУСТЫМ списком банов!');
+    }
+  }
 }
 
 
@@ -396,10 +346,19 @@ async function removeBanFromDB(ip, deviceId) {
 // ── Кэш пользователей ─────────────────────────────────────────
 const usersCache = new Map();
 
+const USERS_CACHE_MAX = 100_000;
 
 function cacheUser(u) {
   if (!u) return;
-  usersCache.set(u.username_low || u.username.toLowerCase(), u);
+  const key = u.username_low || u.username.toLowerCase();
+  // Перезапись существующего ключа не растит Map — обновим позицию вставки,
+  // чтобы «горячие» пользователи не вытеснялись первыми.
+  if (usersCache.has(key)) usersCache.delete(key);
+  else if (usersCache.size >= USERS_CACHE_MAX) {
+    const oldest = usersCache.keys().next().value;
+    if (oldest !== undefined) usersCache.delete(oldest);
+  }
+  usersCache.set(key, u);
 }
 
 
@@ -433,7 +392,6 @@ function rowToUser(row) {
     bio:              row.bio         || '',
     fshrRating:       row.fshr_rating != null ? row.fshr_rating : null,
     fideRating:       row.fide_rating != null ? row.fide_rating : null,
-    twoFactorEnabled: row.two_factor_enabled || false,
     vipUntil:         row.vip_until != null ? Number(row.vip_until) : null,
     badges:           Array.isArray(row.badges) ? row.badges : [],
   };
@@ -446,8 +404,9 @@ function rowToUser(row) {
 // isVip() везде начинает возвращать false сам по себе.
 function isVip(u) { return !!(u && u.vipUntil && u.vipUntil > Date.now()); }
 
-// Выдавать/снимать значок могут только эти два аккаунта (см. запрос владельца).
-function isVipGranter(username) { return ['chesshome', 'marina64'].includes((username || '').toLowerCase()); }
+// Выдавать/снимать VIP-значок могут сайт-админы (роль 'admin' в БД или
+// legacy-ники bootstrap — см. isSiteAdmin).
+function isVipGranter(username) { return isSiteAdmin(username); }
 
 
 // ── Значки в профиле (сезоны и т.п.) ─────────────────────────
@@ -478,105 +437,32 @@ async function getUser(usernameLow) {
 
 
 async function saveUser(u) {
-  cacheUser(u);
   await db(`
     INSERT INTO users (id, username, username_low, email, password_hash, rating,
       games_played, wins, losses, draws, avatar, role, banned, ban_reason,
       created_at, created_from_ip, created_device_id, emoji, bio, fshr_rating, fide_rating,
-      two_factor_enabled, vip_until, shadow_banned, shadow_ban_reason, badges)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)
+      vip_until, shadow_banned, shadow_ban_reason, badges)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)
     ON CONFLICT (id) DO UPDATE SET
       rating=$6, games_played=$7, wins=$8, losses=$9, draws=$10,
       avatar=$11, role=$12, banned=$13, ban_reason=$14, emoji=$18,
-      bio=$19, fshr_rating=$20, fide_rating=$21, two_factor_enabled=$22, vip_until=$23,
-      shadow_banned=$24, shadow_ban_reason=$25, badges=$26
+      bio=$19, fshr_rating=$20, fide_rating=$21, vip_until=$22,
+      shadow_banned=$23, shadow_ban_reason=$24, badges=$25
   `, [u.id, u.username, u.username.toLowerCase(), u.email || null,
       u.passwordHash, u.rating, u.gamesPlayed, u.wins, u.losses, u.draws,
       u.avatar || null, u.role || 'user', u.banned || false, u.banReason || null,
       u.createdAt, u.createdFromIP || null, u.createdDeviceId || null, u.emoji || '',
-      u.bio || '', u.fshrRating ?? null, u.fideRating ?? null, u.twoFactorEnabled || false,
+      u.bio || '', u.fshrRating ?? null, u.fideRating ?? null,
       u.vipUntil ?? null, u.shadowBanned || false, u.shadowBanReason || null,
       JSON.stringify(u.badges || [])]);
 }
 
 
-// ── Кэш глобального чата ──────────────────────────────────────
-const globalChat = [];
-
-async function loadChat() {
-  const r = await db(`
-    SELECT * FROM (SELECT * FROM chat_messages ORDER BY timestamp DESC LIMIT 500) sub ORDER BY timestamp ASC
-  `);
-  for (const row of r.rows) {
-    globalChat.push({
-      id: row.id,
-      username: row.username,
-      message: row.message,
-      role: row.role,
-      timestamp: Number(row.timestamp),
-      shadowHidden: row.shadow_hidden || false,
-      emoji: row.emoji || '',
-      vip: row.vip || false,
-    });
-  }
-}
-
-async function saveChatMsg(msg) {
-  await db('INSERT INTO chat_messages (id, username, message, role, timestamp, shadow_hidden, emoji, vip) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT DO NOTHING',
-    [msg.id, msg.username, msg.message, msg.role || 'user', msg.timestamp, msg.shadowHidden || false, msg.emoji || '', msg.vip || false]);
-}
-
-async function deleteChatMsg(msgId) {
-  await db('DELETE FROM chat_messages WHERE id = $1', [msgId]);
-}
-
-
-// ── Турниры ───────────────────────────────────────────────────
-const tournaments = [];
-
-async function loadTournaments() {
-  const r = await db('SELECT * FROM tournaments ORDER BY starts_at ASC');
-  for (const row of r.rows) {
-    tournaments.push({
-      id: row.id, name: row.name, description: row.description,
-      timeControl: row.time_control,
-      durationMinutes: row.duration_minutes,
-      startsAt: Number(row.starts_at), endsAt: Number(row.ends_at),
-      maxParticipants: row.max_participants, minRating: row.min_rating, maxRating: row.max_rating,
-      blacklist: row.blacklist, createdBy: row.created_by, createdAt: Number(row.created_at),
-      participants: row.participants, games: row.games, winner: row.winner,
-      // Клубные турниры: привязка к клубу и ограничение только для его участников
-      clubId: row.club_id || null, clubOnly: !!row.club_only,
-      // Межклубные турниры: список команд (id клубов), участвующих в турнире.
-      // Создавать такие турниры может только сайт-админ (см. requireAdmin ниже).
-      isInterclub: !!row.is_interclub, teamIds: row.team_ids || [],
-    });
-  }
-}
-
-async function saveTournament(t) {
-  await db(`
-    INSERT INTO tournaments (id, name, description, time_control, duration_minutes,
-      starts_at, ends_at, max_participants, min_rating, max_rating,
-      blacklist, created_by, created_at, participants, games, winner, club_id, club_only,
-      is_interclub, team_ids)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
-    ON CONFLICT (id) DO UPDATE SET
-      name=$2, description=$3, time_control=$4, duration_minutes=$5,
-      starts_at=$6, ends_at=$7, max_participants=$8, min_rating=$9, max_rating=$10,
-      blacklist=$11, participants=$14, games=$15, winner=$16, club_id=$17, club_only=$18,
-      is_interclub=$19, team_ids=$20
-  `, [t.id, t.name, t.description || null, t.timeControl, t.durationMinutes,
-      t.startsAt, t.endsAt, t.maxParticipants, t.minRating, t.maxRating,
-      JSON.stringify(t.blacklist || []), t.createdBy, t.createdAt,
-      JSON.stringify(t.participants || []), JSON.stringify(t.games || []), t.winner || null,
-      t.clubId || null, !!t.clubOnly,
-      !!t.isInterclub, JSON.stringify(t.teamIds || [])]);
-}
-
-async function deleteTournamentFromDB(id) {
-  await db('DELETE FROM tournaments WHERE id = $1', [id]);
-}
+// ── Кэш глобального чата, турниры и их чаты — в services/ ─────
+// chat.service.js: globalChat/loadChat/saveChatMsg/deleteChatMsg,
+//                  клубные и турнирные чаты (кэши + БД)
+// tournament.service.js: tournaments/loadTournaments/saveTournament
+// game.service.js: activeGames, часы, финалы партий
 
 
 // ── Клубы ─────────────────────────────────────────────────────
@@ -610,83 +496,16 @@ async function deleteClubFromDB(id) {
 }
 
 
-// ── Чаты клубов ───────────────────────────────────────────────
-const CLUB_CHAT_MAX = 30;
+// ── Чаты клубов: права и модерация ────────────────────────────
 
-const clubChats = new Map();
-
-const clubChatBans = new Map();
-
-
-function getClubChat(clubId) {
-  if (!clubChats.has(clubId)) clubChats.set(clubId, []);
-  return clubChats.get(clubId);
-}
-
-function getClubChatBans(clubId) {
-  if (!clubChatBans.has(clubId)) clubChatBans.set(clubId, new Map());
-  return clubChatBans.get(clubId);
-}
-
-
-async function initClubChatTable() {
-  await db(`
-    CREATE TABLE IF NOT EXISTS club_chat_messages (
-      id          TEXT PRIMARY KEY,
-      club_id     TEXT NOT NULL,
-      username    TEXT NOT NULL,
-      role        TEXT NOT NULL DEFAULT 'user',
-      message     TEXT NOT NULL,
-      timestamp   BIGINT NOT NULL,
-      is_system   BOOLEAN NOT NULL DEFAULT FALSE
-    )
-  `);
-  await db(`CREATE INDEX IF NOT EXISTS idx_club_chat_club_id ON club_chat_messages(club_id, timestamp DESC)`);
-}
-
-
-async function loadClubChats() {
-  const r = await db(`
-    SELECT * FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY club_id ORDER BY timestamp DESC) AS rn
-      FROM club_chat_messages) t WHERE rn <= ${CLUB_CHAT_MAX} ORDER BY timestamp ASC
-  `);
-  for (const row of r.rows) {
-    const chat = getClubChat(row.club_id);
-    chat.push({
-      id: row.id, username: row.username, role: row.role,
-      message: row.message, timestamp: Number(row.timestamp),
-      system: row.is_system || false,
-    });
-  }
-}
-
-
-async function saveClubChatMsg(clubId, msg) {
-  try {
-    await db(`
-      INSERT INTO club_chat_messages (id, club_id, username, role, message, timestamp, is_system)
-      VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (id) DO NOTHING
-    `, [msg.id, clubId, msg.username, msg.role || 'user', msg.message,
-        msg.timestamp, msg.system || false]);
-    await db(`
-      DELETE FROM club_chat_messages
-      WHERE club_id = $1 AND id NOT IN (
-        SELECT id FROM club_chat_messages
-        WHERE club_id = $1 ORDER BY timestamp DESC LIMIT ${CLUB_CHAT_MAX}
-      )
-    `, [clubId]);
-  } catch (e) { console.error('[saveClubChatMsg] error:', e.message); }
-}
-
-
-async function deleteClubChatMsgsByUser(clubId, usernameLow) {
-  try {
-    await db(`DELETE FROM club_chat_messages WHERE club_id=$1 AND LOWER(username)=$2`, [clubId, usernameLow]);
-  } catch (e) { console.error('[deleteClubChatMsgsByUser] error:', e.message); }
-}
-
+// Сайт-админ: источник истины — роль 'admin' в БД (users.role). Она:
+//  1) подтверждается на старте для legacy-ников bootstrap (см. main()),
 function isSiteAdmin(username) {
-  return username && ['chesshome','marina64'].includes(username.toLowerCase());
+  if (!username) return false;
+  const low = String(username).toLowerCase();
+  const u = usersCache.get(low);
+  if (u) return u.role === 'admin';
+  return ['chesshome', 'marina64'].includes(low);
 }
 
 function isClubModerator(club, username) {
@@ -714,44 +533,6 @@ function canManageTournament(user, t) {
 }
 
 
-// ── Межклубные турниры ──────────────────────────────────────────
-// Отдельная разновидность турнира: несколько клубов ("команд") заявлены
-// заранее (по ссылкам на их страницы), создать такой турнир может только
-// сайт-админ, участвовать можно только за клуб, в котором реально состоишь,
-// а игроки одной команды никогда не спариваются друг с другом.
-const MAX_INTERCLUB_TEAMS = 175;
-
-
-// Достаём id клуба из ссылки вида ".../clubs/<id>" или принимаем "голый" id как есть.
-function extractClubIdFromLink(raw) {
-  if (raw === null || raw === undefined) return null;
-  const s = String(raw).trim();
-  if (!s) return null;
-  const m = s.match(/\/clubs\/([^\/?#]+)/i);
-  if (m) { try { return decodeURIComponent(m[1]).trim(); } catch { return m[1].trim(); } }
-  return s;
-}
-
-
-// Разбирает присланный список ссылок/id команд, убирает дубли и невалидные значения.
-// Возвращает { teamIds, notFound } — notFound содержит то, что не удалось сопоставить с клубом.
-function resolveInterclubTeams(rawLinks) {
-  const arr = Array.isArray(rawLinks) ? rawLinks : [];
-  const teamIds = [];
-  const notFound = [];
-  const seen = new Set();
-  for (const raw of arr) {
-    const id = extractClubIdFromLink(raw);
-    if (!id) continue;
-    if (seen.has(id)) continue;
-    seen.add(id);
-    const club = clubs.find(c => c.id === id);
-    if (!club) { notFound.push(String(raw)); continue; }
-    teamIds.push(club.id);
-  }
-  return { teamIds, notFound };
-}
-
 // Аналог requireAdmin, но также пускает администраторов клуба для турниров их клуба.
 async function requireTournamentManager(req, res, cb) {
   try {
@@ -774,109 +555,14 @@ function canWriteInClubChat(club, username) {
 }
 
 
-// ── Чат турниров ──────────────────────────────────────────────
-// Открыт для сообщений до турнира, во время и ещё 3 часа после его
-// окончания — дальше доступно только чтение (история из последних
-// TOURNAMENT_CHAT_MAX сообщений).
-const TOURNAMENT_CHAT_MAX = 50;
-
-const TOURNAMENT_CHAT_READONLY_AFTER_MS = 3 * 60 * 60 * 1000;
-
-const tournamentChats = new Map();
-      // tId -> [{id, username, role, message, timestamp, system, muted}]
-const tournamentChatMutes = new Map();
-  // tId -> Map(usernameLow -> { until })
-
-function getTournamentChat(tId) {
-  if (!tournamentChats.has(tId)) tournamentChats.set(tId, []);
-  return tournamentChats.get(tId);
-}
-
-function getTournamentChatMutes(tId) {
-  if (!tournamentChatMutes.has(tId)) tournamentChatMutes.set(tId, new Map());
-  return tournamentChatMutes.get(tId);
-}
-
-function isTournamentChatOpen(t, now) {
-  return now < (t.endsAt + TOURNAMENT_CHAT_READONLY_AFTER_MS);
-}
-
+// ── Чат турниров: права модерации ────────────────────────────
 // Модератор чата турнира: сайт-админ, админ клуба (если турнир клубный)
-// ИЛИ создатель конкретно этого турнира.
+// ИЛИ создатель конкретно этого турнира. Само хранилище чатов —
+// в services/chat.service.js.
 function canModerateTournamentChat(user, t) {
   if (!user) return false;
   if (canManageTournament(user, t)) return true;
   return !!(t.createdBy && user.username.toLowerCase() === t.createdBy.toLowerCase());
-}
-
-
-async function initTournamentChatTable() {
-  await db(`
-    CREATE TABLE IF NOT EXISTS tournament_chat_messages (
-      id            TEXT PRIMARY KEY,
-      tournament_id TEXT NOT NULL,
-      username      TEXT NOT NULL,
-      role          TEXT NOT NULL DEFAULT 'user',
-      message       TEXT NOT NULL,
-      timestamp     BIGINT NOT NULL,
-      is_system     BOOLEAN NOT NULL DEFAULT FALSE,
-      is_muted      BOOLEAN NOT NULL DEFAULT FALSE
-    )
-  `);
-  await db(`CREATE INDEX IF NOT EXISTS idx_tournament_chat_tid ON tournament_chat_messages(tournament_id, timestamp DESC)`);
-}
-
-
-async function loadTournamentChats() {
-  const r = await db(`
-    SELECT * FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY tournament_id ORDER BY timestamp DESC) AS rn
-      FROM tournament_chat_messages) t WHERE rn <= ${TOURNAMENT_CHAT_MAX} ORDER BY timestamp ASC
-  `);
-  for (const row of r.rows) {
-    const chat = getTournamentChat(row.tournament_id);
-    chat.push({
-      id: row.id, username: row.username, role: row.role,
-      message: row.message, timestamp: Number(row.timestamp),
-      system: row.is_system || false, muted: row.is_muted || false,
-    });
-  }
-}
-
-
-async function saveTournamentChatMsg(tId, msg) {
-  try {
-    await db(`
-      INSERT INTO tournament_chat_messages (id, tournament_id, username, role, message, timestamp, is_system, is_muted)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (id) DO NOTHING
-    `, [msg.id, tId, msg.username, msg.role || 'user', msg.message,
-        msg.timestamp, msg.system || false, msg.muted || false]);
-    await db(`
-      DELETE FROM tournament_chat_messages
-      WHERE tournament_id = $1 AND id NOT IN (
-        SELECT id FROM tournament_chat_messages
-        WHERE tournament_id = $1 ORDER BY timestamp DESC LIMIT ${TOURNAMENT_CHAT_MAX}
-      )
-    `, [tId]);
-  } catch (e) { console.error('[saveTournamentChatMsg] error:', e.message); }
-}
-
-
-// Мут: не удаляет сообщения пользователя, а стирает их текст, заменяя на
-// «[Замучен]» — история чата (кто когда писал) остаётся видна, но содержимое скрыто.
-async function wipeTournamentChatMsgsByUser(tId, usernameLow) {
-  const chat = getTournamentChat(tId);
-  const affectedIds = [];
-  for (const m of chat) {
-    if ((m.username || '').toLowerCase() === usernameLow && !m.system) {
-      m.message = '[Замучен]';
-      m.muted = true;
-      affectedIds.push(m.id);
-    }
-  }
-  try {
-    await db(`UPDATE tournament_chat_messages SET message = '[Замучен]', is_muted = TRUE WHERE tournament_id=$1 AND LOWER(username)=$2`, [tId, usernameLow]);
-  } catch (e) { console.error('[wipeTournamentChatMsgsByUser] error:', e.message); }
-  return affectedIds;
 }
 
 
@@ -1021,17 +707,28 @@ async function loadNewsAuthors() {
 const server = http.createServer(app);
 
 const io     = new Server(server, {
-  cors: { origin: '*', methods: ['GET','POST','DELETE','PATCH'] },
+  cors: {
+    origin: (origin, cb) => {
+      if (!origin || origin === SITE_URL) return cb(null, true);
+      return cb(null, false);
+    },
+    methods: ['GET','POST','DELETE','PATCH'],
+    credentials: true,
+  },
   // perMessageDeflate жмёт каждый пакет на CPU отправителя и получателя.
   // На 1 ядре с частыми событиями (тиканье часов раз в секунду и т.п.)
   // это ощутимая CPU-нагрузка ради экономии небольшого трафика — отключаем.
   perMessageDeflate: false,
+  maxHttpBufferSize: 64 * 1024,
 });
 
 
 const PORT       = process.env.PORT || 10000;
 
 const JWT_SECRET = process.env.JWT_SECRET;
+
+// Базовый URL сайта: используется для whitelist CORS/Socket.IO origin.
+const SITE_URL   = process.env.SITE_URL || 'https://chesshome.pro';
 
 const RESERVED   = ['chesshome', 'admin', 'moderator', 'system', 'система'];
 
@@ -1048,20 +745,13 @@ function isSystemSender(name) { return !!name && name.toLowerCase() === SYSTEM_S
 const sessions          = new Map();
 
 // username(lowercase) -> socket.id — быстрый O(1) поиск сокета по нику.
-// Раньше findSocketByUsername() и поиск "старой" сессии при auth
-// линейно перебирали ВСЮ карту sessions на каждый вызов (это происходит
-// каждую секунду для каждой активной партии — тик часов, плюс при каждом
-// tournament-тике раз в 3с на каждого участника, плюс emitToAdmins и т.д.)
-// При росте числа онлайн-пользователей и партий это O(n) в горячем пути.
 const usernameToSocketId = new Map();
 
 const onlineUsers       = new Set();
 
 const pendingChallenges = [];
 
-const activeGames       = new Map();
-
-const tournamentGames   = new Map();
+// activeGames / tournamentGames — в services/game.service.js
 
 
 // ── ПУЛ ДОМАШНИХ WORKER'ОВ (ваши ПК) ────────────────────────────
@@ -1074,7 +764,6 @@ const tournamentGames   = new Map();
 // (настраивается в .env самого воркера, см. worker-client/.env.example).
 // Работоспособность сайта никогда не зависит от воркеров: если все
 // выключены, анализ просто идёт локально в браузере посетителя, как
-// было раньше (см. analyze_request ниже и фолбэк в stockfish-ui.js).
 const workers = new Map();
       // socket.id -> { socket, threads, busy, lastSeen }
 const analyzeJobs = new Map();
@@ -1099,21 +788,10 @@ function ipBanMiddleware(req, res, next) {
       return res.status(403).json({ error: 'Это устройство заблокировано. Создание новых аккаунтов запрещено.' });
   }
 
-  const token = getAuthToken(req);
-  if (token) {
-    try {
-      const decoded = jwt.verify(token, process.env.JWT_SECRET);
-      getUser(decoded.username.toLowerCase()).then(user => {
-        if (user && user.banned) { }
-      }).catch(() => {});
-    } catch (e) {}
-  }
   next();
 }
 
-app.use('/api/register', ipBanMiddleware);
-
-app.use('/api/login',    ipBanMiddleware);
+// ipBanMiddleware подключается ТОЛЬКО в цепочках маршрутов /api/register
 
 
 // ── Получение реального IP клиента ───────────────────────────
@@ -1123,11 +801,31 @@ app.use('/api/login',    ipBanMiddleware);
 //   2. x-forwarded-for — берём первый IP из списка (крайний левый = клиент)
 //   3. x-real-ip       — Nginx часто выставляет это поле напрямую
 //   4. socket.remoteAddress — прямое соединение (без прокси / локальный запуск)
+// Заголовки x-real-ip / x-forwarded-for доверяем ТОЛЬКО если TCP-сосед — наш
+// прокси (loopback или приватная сеть: nginx на этой же машине / docker bridge).
+// Иначе любой клиент, обратившийся к Node напрямую, подделает свой IP.
+function isTrustedProxyPeer(peer) {
+  if (!peer || typeof peer !== 'string') return false;
+  const p = peer.startsWith('::ffff:') ? peer.slice(7) : peer;
+  if (p === '::1' || p === '127.0.0.1' || p.startsWith('127.')) return true;
+  if (p.startsWith('10.') || p.startsWith('192.168.')) return true;
+  const m = /^172\.(\d{1,2})\./.exec(p);
+  if (m && +m[1] >= 16 && +m[1] <= 31) return true;
+  if (/^f[cd][0-9a-f]{2}:/i.test(p)) return true; // IPv6 ULA fc00::/7
+  return false;
+}
+function cleanIpHeader(v) {
+  if (typeof v !== 'string') return null;
+  const ip = v.split(',')[0].trim();
+  return require('net').isIP(ip) ? ip : null;
+}
 function getIP(req) {
+  // 1) req.ip — Express сам разбирает x-forwarded-for по trust proxy.
+  // 2) fallback — только x-real-ip и только от доверенного прокси
+  const peer = req.socket?.remoteAddress;
   return req.ip
-    || req.headers['x-forwarded-for']?.split(',')[0]?.trim()
-    || req.headers['x-real-ip']
-    || req.socket?.remoteAddress
+    || (isTrustedProxyPeer(peer) ? cleanIpHeader(req.headers['x-real-ip']) : null)
+    || peer
     || 'unknown';
 }
 
@@ -1189,12 +887,29 @@ function rateLimit(limiter, message = 'Слишком много запросо�
 app.use((req, res, next) => {
   res.set('X-Frame-Options', 'SAMEORIGIN');
   res.set('X-Content-Type-Options', 'nosniff');
-  res.set('X-XSS-Protection', '1; mode=block');
   res.set('Referrer-Policy', 'same-origin');
+  res.set('Content-Security-Policy',
+    "default-src 'self'; " +
+    "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://mc.yandex.ru; " +
+    "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://fonts.googleapis.com; " +
+    "font-src 'self' data: https://fonts.gstatic.com; " +
+    "img-src 'self' data: blob: https:; " +
+    "connect-src 'self' wss: ws: https://mc.yandex.ru; " +
+    "worker-src 'self' blob:; " +
+    "frame-ancestors 'self'; " +
+    "base-uri 'self'; form-action 'self'");
+  res.set('Cross-Origin-Opener-Policy', 'same-origin');
+  res.set('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
   next();
 });
 
-app.use(cors());
+app.use(cors({
+  origin: (origin, cb) => {
+    if (!origin || origin === SITE_URL) return cb(null, true);
+    return cb(null, false);
+  },
+  credentials: true,
+}));
 
 app.use(compression());
 
@@ -1271,15 +986,10 @@ app.use((req, res, next) => {
   next();
 });
 
+app.use(require('./sitemap')({ db: pool }));
+
 
 app.use(express.static(path.join(__dirname, '../public'), {
-  // Раньше статика (js/css/картинки/шрифты) отдавалась без Cache-Control —
-  // каждый клиент дергал сервер за одними и теми же файлами на каждой
-  // загрузке страницы. maxAge даёт браузеру право не перезапрашивать файл
-  // повторно в течение часа, что на 1 ядре и 100 юзерах заметно снижает
-  // число обслуживаемых HTTP-запросов. HTML по-прежнему no-store (см. выше).
-  // index:false — index.html отдаём вручную (см. app.get('/') выше), чтобы
-  // он тоже проходил через версионирование /js/*.js.
   maxAge: '1h',
   etag: true,
   index: false,
@@ -1289,61 +999,69 @@ app.use(express.static(path.join(__dirname, '../public'), {
 const LICHESS_TOKEN = process.env.LICHESS_API_TOKEN;
 
 
-
-// ── ЮKassa Донаты ─────────────────────────────────────────────
-const YUKASSA_SHOP_ID      = process.env.YUKASSA_SHOP_ID;
-
-const YUKASSA_SECRET_KEY   = process.env.YUKASSA_SECRET_KEY;
-
-const SITE_URL             = process.env.SITE_URL || 'https://chesshome.pro';
-
-
-// Таблица платежей (создаётся в main)
-async function initDonateTable() {
-  await db(`
-    CREATE TABLE IF NOT EXISTS donations (
-      id            TEXT PRIMARY KEY,
-      username      TEXT,
-      amount        NUMERIC(10,2) NOT NULL,
-      currency      TEXT NOT NULL DEFAULT 'RUB',
-      message       TEXT,
-      status        TEXT NOT NULL DEFAULT 'pending',
-      payment_id    TEXT,
-      created_at    BIGINT NOT NULL
-    )
-  `);
-}
-
-
-// Раньше не было выделенного лимита на /login — только общий limiterGeneral
-// (10000 запросов/мин на IP), что позволяло ~166 попыток пароля/сек с одного IP.
 const loginFailStreaks = new Map();
+ // 'username_low|ip' -> { count, resetAt }
+const USERNAME_FAIL_WINDOW_MS = 15 * 60 * 1000;
+const USERNAME_FAIL_TOTAL_MAX = 30;
+const usernameFailTotals = new Map();
  // username_low -> { count, resetAt }
-function getLoginFailStreak(usernameLow) {
+function pruneFailWindow(map, now) {
+  for (const [k, v] of map.entries()) if (now > v.resetAt) map.delete(k);
+}
+setInterval(() => {
   const now = Date.now();
-  const entry = loginFailStreaks.get(usernameLow);
+  pruneFailWindow(loginFailStreaks, now);
+  pruneFailWindow(usernameFailTotals, now);
+}, 10 * 60 * 1000).unref();
+
+// Сколько неудач уже у этой пары (ник, IP)
+function getLoginFailStreak(usernameLow, ip) {
+  const now = Date.now();
+  const entry = loginFailStreaks.get(usernameLow + '|' + (ip || 'unknown'));
   if (!entry || now > entry.resetAt) return 0;
   return entry.count;
 }
 
-function bumpLoginFailStreak(usernameLow) {
+// Сколько суммарно неудач у ника со всех IP (для анти-распределённого брутфорса)
+function getUsernameFailTotal(usernameLow) {
   const now = Date.now();
-  const entry = loginFailStreaks.get(usernameLow);
+  const entry = usernameFailTotals.get(usernameLow);
+  if (!entry || now > entry.resetAt) return 0;
+  return entry.count;
+}
+
+// До какого значения (мс) лочен ник целиком, либо 0
+function getUsernameLockUntil(usernameLow) {
+  const now = Date.now();
+  const entry = usernameFailTotals.get(usernameLow);
+  if (!entry || now > entry.resetAt) return 0;
+  return entry.count >= USERNAME_FAIL_TOTAL_MAX ? entry.resetAt : 0;
+}
+
+function bumpLoginFailStreak(usernameLow, ip) {
+  const now = Date.now();
+  const key = usernameLow + '|' + (ip || 'unknown');
+  const entry = loginFailStreaks.get(key);
   if (!entry || now > entry.resetAt) {
-    loginFailStreaks.set(usernameLow, { count: 1, resetAt: now + 15 * 60 * 1000 });
+    loginFailStreaks.set(key, { count: 1, resetAt: now + USERNAME_FAIL_WINDOW_MS });
   } else {
     entry.count++;
   }
+  const total = usernameFailTotals.get(usernameLow);
+  if (!total || now > total.resetAt) {
+    usernameFailTotals.set(usernameLow, { count: 1, resetAt: now + USERNAME_FAIL_WINDOW_MS });
+  } else {
+    total.count++;
+  }
 }
 
-function clearLoginFailStreak(usernameLow) {
-  loginFailStreaks.delete(usernameLow);
+function clearLoginFailStreak(usernameLow, ip) {
+  loginFailStreaks.delete(usernameLow + '|' + (ip || 'unknown'));
+  // Общий счётчик ника при УСПЕШНОМ входе сбрасываем только если он не лочен —
+  // иначе 29 неудач + 1 успех обнуляли бы прогресс анти-брутфорса.
+  const total = usernameFailTotals.get(usernameLow);
+  if (total && total.count < USERNAME_FAIL_TOTAL_MAX) usernameFailTotals.delete(usernameLow);
 }
-
-setInterval(() => {
-  const now = Date.now();
-  for (const [k, v] of loginFailStreaks.entries()) if (now > v.resetAt) loginFailStreaks.delete(k);
-}, 10 * 60 * 1000);
 
 // per-user (не per-IP) лимит: не больше 5 попыток в минуту на аккаунт —
 // внутри транзакции всё равно защищено FOR UPDATE + total_crystals_updated_at,
@@ -1354,10 +1072,18 @@ const limiterQuests = new RateLimiter(60_000, 5);
 async function handleDeleteChatMsg(req, res) {
   await requireAdmin(req, res, async () => {
     const idx = globalChat.findIndex(m => m.id === req.params.msgId);
-    if (idx === -1) return res.status(404).json({ error: 'Не найдено' });
-    const removed = globalChat[idx];
-    globalChat.splice(idx, 1);
-    await deleteChatMsg(req.params.msgId);
+    const removed = idx !== -1 ? globalChat[idx] : null;
+    if (idx !== -1) globalChat.splice(idx, 1);
+    let r = null;
+    try { r = await deleteChatMsg(req.params.msgId); }
+    catch (e) {
+      console.error('[DeleteChatMsg] SQL:', e.message);
+      if (idx === -1) return res.status(500).json({ error: 'Ошибка удаления' });
+    }
+    // 404 — только если сообщения нет НИ в кэше, НИ в БД.
+    if (idx === -1 && (!r || r.rowCount === 0)) {
+      return res.status(404).json({ error: 'Не найдено' });
+    }
     await logAdminAction(req.user.username, 'chat_delete', removed?.username || null, { msgId: req.params.msgId, text: (removed?.message || '').slice(0, 200) });
     io.emit('chat_msg_deleted', req.params.msgId);
     res.json({ ok: true });
@@ -1365,19 +1091,8 @@ async function handleDeleteChatMsg(req, res) {
 }
 
 
-// Вынесено в отдельную функцию, чтобы вызывать и из ручного удаления,
-// и автоматически при бане пользователя (см. /api/admin/ban).
-async function removeUserChatMessages(username) {
-  const toRemove = globalChat.filter(m => m.username === username).map(m => m.id);
-  for (let i = globalChat.length - 1; i >= 0; i--) {
-    if (globalChat[i].username === username) globalChat.splice(i, 1);
-  }
-  for (const id of toRemove) {
-    await deleteChatMsg(id).catch(() => {});
-  }
-  if (toRemove.length) io.emit('chat_msgs_user_deleted', username);
-  return toRemove.length;
-}
+// Вынесено в отдельную функцию (services/chat.service.js), чтобы вызывать
+// и из ручного удаления, и автоматически при бане пользователя (см. /api/admin/ban).
 
 
 async function handleUpdateReportStatus(req, res) {
@@ -1434,8 +1149,53 @@ async function handleUpdateAppealStatus(req, res) {
 async function handleEditTournament(req, res) {
   await requireTournamentManager(req, res, async (t) => {
     if (getTournamentStatus(t, Date.now()) === 'finished') return res.status(400).json({ error: 'Турнир завершён' });
-    ['name','description','timeControl','durationMinutes','maxParticipants','minRating','maxRating'].forEach(k => { if (req.body[k] !== undefined) t[k] = req.body[k]; });
-    if (req.body.startsAt) { t.startsAt = new Date(req.body.startsAt).getTime(); t.endsAt = t.startsAt + t.durationMinutes * 60000; }
+    const b = req.body || {};
+    const upd = {};
+    if (b.name !== undefined) {
+      const n = String(b.name).trim().slice(0, 60);
+      if (!n) return res.status(400).json({ error: 'Название не может быть пустым' });
+      upd.name = n;
+    }
+    if (b.description !== undefined) upd.description = String(b.description || '').trim().slice(0, 1000);
+    if (b.timeControl !== undefined) {
+      if (typeof b.timeControl !== 'string' || !/^\d{1,3}(\.\d)?\+\d{1,2}(s)?$/.test(b.timeControl)) {
+        return res.status(400).json({ error: 'Неверный контроль времени (формат «10+0», «3+2»)' });
+      }
+      upd.timeControl = b.timeControl;
+    }
+    if (b.durationMinutes !== undefined) {
+      const d = parseInt(b.durationMinutes, 10);
+      if (!Number.isFinite(d)) return res.status(400).json({ error: 'Неверная длительность' });
+      upd.durationMinutes = Math.max(5, Math.min(d, 7 * 24 * 60));
+    }
+    if (b.maxParticipants !== undefined) {
+      let m = parseInt(b.maxParticipants, 10);
+      if (!Number.isFinite(m) || m < 0) m = 0;
+      upd.maxParticipants = Math.min(m, 512);
+    }
+    if (b.minRating !== undefined || b.maxRating !== undefined) {
+      let lo = b.minRating !== undefined ? parseInt(b.minRating, 10) : t.minRating;
+      let hi = b.maxRating !== undefined ? parseInt(b.maxRating, 10) : t.maxRating;
+      if (!Number.isFinite(lo) || lo < 0) lo = 0;
+      if (!Number.isFinite(hi) || hi <= 0) hi = 9999;
+      if (lo > hi) { const tmp = lo; lo = hi; hi = tmp; }
+      upd.minRating = lo; upd.maxRating = hi;
+    }
+    if (b.startsAt) {
+      const st = new Date(b.startsAt).getTime();
+      if (!Number.isFinite(st)) return res.status(400).json({ error: 'Неверная дата начала' });
+      upd.startsAt = st;
+    }
+    if (Array.isArray(b.teamLinks) && b.teamLinks.length > 500) {
+      return res.status(400).json({ error: 'Слишком много ссылок на команды' });
+    }
+    Object.assign(t, upd);
+    // Старт перенесли в будущее — сбрасываем флаг «старт уже обработан», иначе при
+    // новом старте участников не поставят в очередь и пары не создадутся.
+    if (upd.startsAt !== undefined && upd.startsAt > Date.now()) delete t._startNotified;
+    if (upd.startsAt !== undefined || upd.durationMinutes !== undefined) {
+      t.endsAt = t.startsAt + t.durationMinutes * 60000;
+    }
     if (Array.isArray(req.body.blacklist)) t.blacklist = req.body.blacklist.map(s => String(s).toLowerCase().trim()).filter(Boolean).slice(0, 100);
     // Редактирование списка команд межклубного турнира (только для isInterclub турниров,
     // requireTournamentManager уже гарантирует, что сюда попадёт только сайт-админ).
@@ -1527,16 +1287,31 @@ function makeSlug(title, id) {
 
 
 const forumViewSessions = new Map();
+const FORUM_VIEW_MAX_THREADS = 1000; // сколько тем держим в памяти
+const FORUM_VIEW_MAX_VIEWERS = 5000; // сколько уникальных просмотрщиков на тему
+
+// Возвращает true, если viewerKey для темы виден впервые (тему нужно
+// +1 к счётчику просмотров), и в любом случае гарантирует соблюдение
+// лимитов коллекции.
+function trackForumView(threadId, viewerKey) {
+  // Просроченные/удалённые темы постепенно выдавливаются лимитом MAX_THREADS.
+  if (forumViewSessions.size >= FORUM_VIEW_MAX_THREADS && !forumViewSessions.has(threadId)) {
+    const oldest = forumViewSessions.keys().next().value;
+    if (oldest !== undefined) forumViewSessions.delete(oldest);
+  }
+  let viewers = forumViewSessions.get(threadId);
+  if (!viewers) { viewers = new Set(); forumViewSessions.set(threadId, viewers); }
+  if (viewers.has(viewerKey)) return false;
+  if (viewers.size >= FORUM_VIEW_MAX_VIEWERS) return false; // Set полон — новые просмотрщики не копим
+  viewers.add(viewerKey);
+  return true;
+}
 
 
 async function handleUnfollow(req, res) {
   try {
     const target = await getUser(req.params.username.toLowerCase());
     const follower = req.user.username;
-    // Используем канонический регистр ника, если он найден в БД — раньше отписка
-    // сравнивала строки с учётом регистра, из-за чего при малейшем несовпадении
-    // регистра (например, ссылка вела на "Ivan", а подписка была на "ivan")
-    // DELETE не находил нужную строку и кнопка "молча" не работала.
     const following = target ? target.username : req.params.username;
     await db(`DELETE FROM follows WHERE follower = $1 AND following = $2`, [follower, following]);
     res.json({ ok: true });
@@ -1555,23 +1330,12 @@ function blogAuthMiddleware(req, res, next) {
   catch { return res.status(401).json({ error: 'Неверный токен' }); }
 }
 
-function blogAdminMiddleware(req, res, next) {
-  const auth = getAuthToken(req);
-  if (!auth) return res.status(401).json({ error: 'Не авторизован' });
-  try { req.blogUser = jwt.verify(auth, JWT_SECRET); }
-  catch { return res.status(401).json({ error: 'Неверный токен' }); }
-  if (!isBlogAdmin(req.blogUser.username)) return res.status(403).json({ error: 'Только администратор' });
-  next();
-}
-
-
-function isBlogAdmin(username) { return username && ['chesshome','marina64'].includes(username.toLowerCase()); }
+function isBlogAdmin(username) { return isSiteAdmin(username); }
 
 
 // Заголовок и текст статьи блога иногда приезжают в base64 (поле encoding:'b64') —
 // так фронтенд обходит ложные срабатывания WAF/ModSecurity на длинном сыром
 // markdown-тексте (WAF видит бессмысленный base64 вместо спецсимволов и не блокирует
-// запрос). Раскодируем здесь один раз, дальше код работает с обычным текстом как раньше.
 function decodeBlogField(value, encoding) {
   if (typeof value !== 'string' || encoding !== 'b64') return value;
   try { return Buffer.from(value, 'base64').toString('utf8'); }
@@ -1587,27 +1351,6 @@ function blogSanitize(post, withBody) {
   if (withBody) o.body = post.body;
   return o;
 }
-
-
-db(`CREATE TABLE IF NOT EXISTS blog_views (viewer_key TEXT NOT NULL, post_id TEXT NOT NULL, PRIMARY KEY (viewer_key, post_id))`).catch(e => console.error('[Blog] blog_views init:', e.message));
-
-db(`CREATE TABLE IF NOT EXISTS blog_likes (user_id TEXT NOT NULL, post_id TEXT NOT NULL, PRIMARY KEY (user_id, post_id))`).catch(e => console.error('[Blog] blog_likes init:', e.message));
-
-db(`ALTER TABLE blog_posts ADD COLUMN IF NOT EXISTS community BOOLEAN DEFAULT FALSE`).catch(() => {});
-
-db(`CREATE TABLE IF NOT EXISTS blog_comments (id TEXT PRIMARY KEY, post_id TEXT NOT NULL, author TEXT NOT NULL, body TEXT NOT NULL, created_at BIGINT NOT NULL, deleted BOOLEAN NOT NULL DEFAULT FALSE, deleted_by TEXT, edit_count INT NOT NULL DEFAULT 0, edited_at BIGINT)`).catch(e => console.error('[Blog] blog_comments init:', e.message));
-
-db(`ALTER TABLE blog_comments ADD COLUMN IF NOT EXISTS edit_count INT NOT NULL DEFAULT 0`).catch(()=>{});
-
-db(`ALTER TABLE blog_comments ADD COLUMN IF NOT EXISTS edited_at BIGINT`).catch(()=>{});
-
-db(`CREATE INDEX IF NOT EXISTS idx_blog_comments_post ON blog_comments(post_id, created_at ASC)`).catch(() => {});
-
-db(`CREATE TABLE IF NOT EXISTS blog_comment_reactions (comment_id TEXT NOT NULL, user_id TEXT NOT NULL, emoji TEXT NOT NULL, PRIMARY KEY (comment_id, user_id))`).catch(e => console.error('[Blog] blog_comment_reactions init:', e.message));
-
-db(`CREATE TABLE IF NOT EXISTS blog_comment_bans (post_id TEXT NOT NULL, username TEXT NOT NULL, type TEXT NOT NULL DEFAULT 'mute', until BIGINT, created_at BIGINT NOT NULL, PRIMARY KEY (post_id, username))`).catch(e => console.error('[Blog] blog_comment_bans init:', e.message));
-
-db(`CREATE TABLE IF NOT EXISTS blog_global_comment_bans (username TEXT PRIMARY KEY, type TEXT NOT NULL DEFAULT 'mute', until BIGINT, created_at BIGINT NOT NULL)`).catch(e => console.error('[Blog] blog_global_comment_bans init:', e.message));
 
 
 async function handleDeleteBlogPost(req, res) {
@@ -1636,7 +1379,7 @@ async function handleDeleteBlogPost(req, res) {
 // ══════════════════════════════════════════════════════════════
 
 function isBlogCommentAdmin(username) {
-  return username && ['chesshome','marina64'].includes(username.toLowerCase());
+  return isSiteAdmin(username);
 }
 
 
@@ -1711,28 +1454,6 @@ function newsSanitize(post, withBody) {
 }
 
 
-db(`CREATE TABLE IF NOT EXISTS news_posts (
-  id TEXT PRIMARY KEY, title TEXT NOT NULL, body TEXT NOT NULL, author TEXT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'draft', views INT NOT NULL DEFAULT 0,
-  likes INT NOT NULL DEFAULT 0, dislikes INT NOT NULL DEFAULT 0, cover TEXT DEFAULT '',
-  created_at BIGINT NOT NULL, updated_at BIGINT
-)`).catch(e => console.error('[News] news_posts init:', e.message));
-
-db(`CREATE TABLE IF NOT EXISTS news_authors (username TEXT NOT NULL, username_low TEXT PRIMARY KEY, created_at BIGINT NOT NULL)`).catch(e => console.error('[News] news_authors init:', e.message));
-
-db(`CREATE TABLE IF NOT EXISTS news_views (viewer_key TEXT NOT NULL, post_id TEXT NOT NULL, PRIMARY KEY (viewer_key, post_id))`).catch(e => console.error('[News] news_views init:', e.message));
-
-db(`CREATE TABLE IF NOT EXISTS news_likes (user_id TEXT NOT NULL, post_id TEXT NOT NULL, PRIMARY KEY (user_id, post_id))`).catch(e => console.error('[News] news_likes init:', e.message));
-
-db(`CREATE TABLE IF NOT EXISTS news_dislikes (user_id TEXT NOT NULL, post_id TEXT NOT NULL, PRIMARY KEY (user_id, post_id))`).catch(e => console.error('[News] news_dislikes init:', e.message));
-
-db(`CREATE TABLE IF NOT EXISTS news_comments (id TEXT PRIMARY KEY, post_id TEXT NOT NULL, author TEXT NOT NULL, body TEXT NOT NULL, created_at BIGINT NOT NULL, deleted BOOLEAN NOT NULL DEFAULT FALSE, deleted_by TEXT)`).catch(e => console.error('[News] news_comments init:', e.message));
-
-db(`CREATE INDEX IF NOT EXISTS idx_news_comments_post ON news_comments(post_id, created_at ASC)`).catch(() => {});
-
-db(`CREATE TABLE IF NOT EXISTS news_comment_mutes (post_id TEXT NOT NULL, username TEXT NOT NULL, until BIGINT NOT NULL, created_at BIGINT NOT NULL, PRIMARY KEY (post_id, username))`).catch(e => console.error('[News] news_comment_mutes init:', e.message));
-
-
 async function handleDeleteNewsPost(req, res) {
   const idx = newsPosts.findIndex(p => p.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: 'Новость не найдена' });
@@ -1796,14 +1517,34 @@ try { fs.mkdirSync(UPLOADS_DIR, { recursive: true }); } catch (e) { console.erro
 const uploadStorage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, UPLOADS_DIR),
   filename: (req, file, cb) => {
-    const ext = (path.extname(file.originalname) || '').toLowerCase().replace(/[^a-z0-9.]/g,'').slice(0,10);
-    cb(null, `${Date.now()}_${uuidv4()}${ext}`);
+    const extByMime = { 'image/jpeg': '.jpg', 'image/png': '.png', 'image/gif': '.gif', 'image/webp': '.webp' };
+    cb(null, `${Date.now()}_${uuidv4()}${extByMime[file.mimetype] || '.bin'}`);
   },
 });
 
+// Magic bytes реальных изображений — проверка содержимого, а не декларации клиента.
+const IMAGE_MAGIC = [
+  { mime: 'image/jpeg', bytes: [0xFF, 0xD8, 0xFF] },
+  { mime: 'image/png',  bytes: [0x89, 0x50, 0x4E, 0x47] },
+  { mime: 'image/gif',  bytes: [0x47, 0x49, 0x46, 0x38] },
+  { mime: 'image/webp', bytes: [0x52, 0x49, 0x46, 0x46] }, // RIFF....WEBP — первые 4 байта + проверка 8-11
+];
+function sniffImageMime(buf) {
+  for (const sig of IMAGE_MAGIC) {
+    if (sig.bytes.every((b, i) => buf[i] === b)) {
+      if (sig.mime === 'image/webp') {
+        // Доп. проверка строки WEBP на смещении 8
+        return buf.length >= 12 && buf[8] === 0x57 && buf[9] === 0x45 && buf[10] === 0x42 && buf[11] === 0x50 ? sig.mime : null;
+      }
+      return sig.mime;
+    }
+  }
+  return null;
+}
+
 const uploadImage = multer({
   storage: uploadStorage,
-  limits: { fileSize: 5 * 1024 * 1024 },
+  limits: { fileSize: 5 * 1024 * 1024, files: 1, fields: 10 },
   fileFilter: (req, file, cb) => {
     if (!/^image\/(jpeg|png|gif|webp)$/.test(file.mimetype)) return cb(new Error('Разрешены только изображения (jpeg, png, gif, webp)'));
     cb(null, true);
@@ -1843,117 +1584,39 @@ async function handleDeleteClub(req, res) {
 //  PUZZLE API
 // ══════════════════════════════════════════════════════════════
 
-async function initPuzzleTables() {
-  try {
-    await db(`CREATE TABLE IF NOT EXISTS puzzles (
-      id TEXT PRIMARY KEY, title TEXT NOT NULL, description TEXT,
-      fen TEXT NOT NULL, solution TEXT NOT NULL, topic TEXT NOT NULL,
-      difficulty TEXT DEFAULT 'medium', created_by TEXT DEFAULT 'system',
-      created_at BIGINT DEFAULT (EXTRACT(EPOCH FROM NOW())*1000)::BIGINT,
-      play_count INT DEFAULT 0, correct_count INT DEFAULT 0
-    )`);
-    await db(`CREATE TABLE IF NOT EXISTS puzzle_topics (
-      id TEXT PRIMARY KEY, name TEXT NOT NULL, icon TEXT NOT NULL,
-      description TEXT, sort_order INT DEFAULT 0
-    )`);
-    await db(`CREATE TABLE IF NOT EXISTS puzzle_attempts (
-      id TEXT PRIMARY KEY, user_id TEXT NOT NULL, puzzle_id TEXT NOT NULL,
-      correct BOOLEAN NOT NULL,
-      created_at BIGINT DEFAULT (EXTRACT(EPOCH FROM NOW())*1000)::BIGINT,
-      UNIQUE(user_id, puzzle_id)
-    )`);
-    await db(`ALTER TABLE users ADD COLUMN IF NOT EXISTS puzzle_rating INT DEFAULT 1200`);
-    await db(`ALTER TABLE users ADD COLUMN IF NOT EXISTS puzzle_solved INT DEFAULT 0`);
-    await db(`ALTER TABLE users ADD COLUMN IF NOT EXISTS puzzle_attempted INT DEFAULT 0`);
-    await db(`CREATE INDEX IF NOT EXISTS idx_puzzles_topic ON puzzles(topic)`);
-    await db(`CREATE INDEX IF NOT EXISTS idx_puzzle_attempts_user ON puzzle_attempts(user_id)`);
-    const topics = [
-      ['mate1','Мат в 1 ход','♟','Найди единственный ход, ставящий мат',1],
-      ['mate2','Мат в 2 хода','♞','Комбинация из двух ходов с матом',2],
-      ['fork','Вилка','⚔️','Атакуй две фигуры одновременно',3],
-      ['pin','Связка','📌','Обездвижь фигуру соперника',4],
-      ['skewer','Рентген','🎯','Атакуй сильную фигуру через слабую',5],
-      ['discovery','Открытый удар','💥','Открой атаку своей фигурой',6],
-      ['endgame','Эндшпиль','👑','Техническое завершение партии',7],
-      ['tactics','Тактика','⚡','Разные тактические мотивы',8],
-    ];
-    for (const [id,name,icon,desc,order] of topics) {
-      await db(`INSERT INTO puzzle_topics (id,name,icon,description,sort_order) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (id) DO NOTHING`,[id,name,icon,desc,order]);
-    }
-    await db(`CREATE TABLE IF NOT EXISTS puzzle_storm_runs (
-      id TEXT PRIMARY KEY,
-      user_id TEXT NOT NULL,
-      username TEXT NOT NULL,
-      score INT NOT NULL DEFAULT 0,
-      total_attempted INT NOT NULL DEFAULT 0,
-      correct INT NOT NULL DEFAULT 0,
-      wrong INT NOT NULL DEFAULT 0,
-      time_bonus INT NOT NULL DEFAULT 0,
-      created_at BIGINT DEFAULT (EXTRACT(EPOCH FROM NOW())*1000)::BIGINT
-    )`);
-    await db(`CREATE INDEX IF NOT EXISTS idx_storm_user ON puzzle_storm_runs(user_id)`);
-    await db(`CREATE INDEX IF NOT EXISTS idx_storm_score ON puzzle_storm_runs(score DESC)`);
-    await db(`ALTER TABLE users ADD COLUMN IF NOT EXISTS storm_best INT DEFAULT 0`);
-    await db(`ALTER TABLE users ADD COLUMN IF NOT EXISTS storm_runs INT DEFAULT 0`);
-    await db(`ALTER TABLE users ADD COLUMN IF NOT EXISTS emoji TEXT DEFAULT ''`);
-    console.log('[Puzzles] Таблицы инициализированы');
-  } catch(e) { console.error('[Puzzles] init error:', e.message); }
+// ── Квесты (Сезон 2) ─────────────────────────────────────────
+const SEASON_NUMBER = 2;
+// Старт сезона задаётся переменной окружения SEASON_START (ISO-дата);
+// по умолчанию — 1 сентября 2026 UTC.
+const SEASON_START = process.env.SEASON_START
+  ? new Date(process.env.SEASON_START).getTime()
+  : Date.UTC(2026, 8, 1);
+
+function getCurrentSeasonDay() {
+  const day = Math.floor((Date.now() - SEASON_START) / 86_400_000) + 1;
+  return Math.max(1, day);
 }
-
-
-// ══════════════════════════════════════════════════════════════
-//  DURKA — сводный лидерборд по результатам lichess-турниров
-// ══════════════════════════════════════════════════════════════
-//  Как это работает:
-//  1) durka_tournaments      — какие турниры уже засчитаны (защита от повторного начисления).
-//  2) durka_tournament_results — очки каждого игрока в каждом отдельном турнире (для истории/аудита).
-//  3) durka_players          — сумма очков по всем засчитанным турнирам (то, что видно на /durka).
-//
-//  Очки закидывает скрипт hi.py, который дергает Lichess API и шлёт
-//  результат сюда через POST /api/durka/add-tournament с секретным
-//  ключом в заголовке x-durka-key (см. DURKA_ADMIN_KEY в .env).
-//  Обычная сессия/логин тут не нужен — скрипт работает с сервера напрямую.
-
-async function initDurkaTables() {
-  try {
-    await db(`CREATE TABLE IF NOT EXISTS durka_players (
-      username_low TEXT PRIMARY KEY,
-      username     TEXT NOT NULL,
-      points       INT NOT NULL DEFAULT 0,
-      tournaments  INT NOT NULL DEFAULT 0,
-      updated_at   BIGINT NOT NULL
-    )`);
-    await db(`CREATE INDEX IF NOT EXISTS idx_durka_players_points ON durka_players(points DESC)`);
-
-    await db(`CREATE TABLE IF NOT EXISTS durka_tournaments (
-      id           TEXT PRIMARY KEY,
-      name         TEXT,
-      url          TEXT,
-      players      INT NOT NULL DEFAULT 0,
-      added_by     TEXT,
-      created_at   BIGINT NOT NULL
-    )`);
-
-    await db(`CREATE TABLE IF NOT EXISTS durka_tournament_results (
-      tournament_id TEXT NOT NULL,
-      username_low  TEXT NOT NULL,
-      username      TEXT NOT NULL,
-      points        INT NOT NULL DEFAULT 0,
-      rank          INT,
-      PRIMARY KEY (tournament_id, username_low)
-    )`);
-    await db(`CREATE INDEX IF NOT EXISTS idx_durka_results_tournament ON durka_tournament_results(tournament_id)`);
-
-    console.log('[Durka] Таблицы инициализированы');
-  } catch(e) { console.error('[Durka] init error:', e.message); }
-}
-
 
 // Проверка секретного ключа скрипта (НЕ обычная сессия пользователя).
+// Constant-time сравнение строк-секретов: обычное 'a !== b'short-circuit'ит
+// на первом несовпадающем байте, что теоретически позволяет вычислять секрет
+// побайтово по времени ответа. Хэшируем обе стороны SHA-256 — длины выравниваются,
+// сравнение через timingSafeEqual становится безопасным.
+function safeSecretEqual(a, b) {
+  try {
+    const ha = crypto.createHash('sha256').update(String(a)).digest();
+    const hb = crypto.createHash('sha256').update(String(b)).digest();
+    return crypto.timingSafeEqual(ha, hb);
+  } catch (e) { return false; }
+}
+
+
 function durkaKeyMiddleware(req, res, next) {
   const key = process.env.DURKA_ADMIN_KEY;
   if (!key) return res.status(500).json({ error: 'DURKA_ADMIN_KEY не настроен на сервере' });
-  if (req.headers['x-durka-key'] !== key) return res.status(403).json({ error: 'Неверный ключ' });
+  if (typeof req.headers['x-durka-key'] !== 'string' || !safeSecretEqual(req.headers['x-durka-key'], key)) {
+    return res.status(403).json({ error: 'Неверный ключ' });
+  }
   next();
 }
 
@@ -1974,11 +1637,8 @@ async function handleDeletePuzzle(req, res) {
   });
 }
 
-['privacy','terms','about','admin','tournaments','tournament','admin-tournament','clubs', 'report'].forEach(p => { app.get('/' + p, (req, res) => res.sendFile(path.join(__dirname, '../public/' + p + '.html'))); });
-
-const SPA_ROUTES = ['/lobby', '/analysis', '/editor', '/leaderboard'];
-
-SPA_ROUTES.forEach(r => { app.get(r, (req, res) => res.sendFile(path.join(__dirname, '../public/index.html'))); });
+// Регистрация маршрутов (страницы и API) вынесена в routes.js —
+// в core.js только состояние, БД, хелперы и функции-контроллеры.
 
 
 async function handleDeleteDevDiaryEntry(req, res) {
@@ -2004,17 +1664,41 @@ async function handleDeleteDevDiaryComment(req, res) {
 }
 
 
-
-
 // ══════════════════════════════════════════════════════════════
 //  HELPERS
 // ══════════════════════════════════════════════════════════════
 
-function authMiddleware(req, res, next) {
+const BANNED_ALLOWED_PATHS = [
+  /^\/api\/me$/,
+  /^\/api\/appeals(\/|$)/,
+  /^\/api\/dev-diary\/[^/]+\/comments$/,
+];
+async function authMiddleware(req, res, next) {
   const auth = getAuthToken(req);
   if (!auth) return res.status(401).json({ error: 'Не авторизован' });
-  try { req.user = jwt.verify(auth, JWT_SECRET); next(); }
-  catch { res.status(401).json({ error: 'Неверный токен' }); }
+  let decoded;
+  try { decoded = jwt.verify(auth, JWT_SECRET); }
+  catch { return res.status(401).json({ error: 'Неверный токен' }); }
+  req.user = decoded;
+  try {
+    const u = await getUser(String(decoded.username || '').toLowerCase());
+    if (!u) return res.status(401).json({ error: 'Аккаунт не найден' });
+    if (u.banned) {
+      const p = String(req.originalUrl || req.url || '').split('?')[0];
+      if (!BANNED_ALLOWED_PATHS.some(rx => rx.test(p))) {
+        return res.status(403).json({ error: 'Аккаунт заблокирован' + (u.banReason ? ': ' + u.banReason : '') });
+      }
+    }
+  } catch (e) {
+    // БД недоступна: проверить бан/удаление аккаунта мы не можем. Чтение (GET/HEAD)
+    // пропускаем, чтобы сайт не «падал» целиком, а ИЗМЕНЯЮЩИЕ запросы закрываем:
+    // иначе забаненный пользователь с ещё живым JWT пишет в чат/ЛС/турниры
+    console.error('[authMiddleware] БД недоступна:', e && e.message);
+    if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
+      return res.status(503).json({ error: 'Сервис временно недоступен, попробуйте через минуту' });
+    }
+  }
+  next();
 }
 
 
@@ -2030,8 +1714,8 @@ async function requireAdmin(req, res, cb) {
 }
 
 
-// Отдельная проверка для VIP-значка: не завязана на общую роль admin,
-// пускает только chesshome и Marina64 (см. isVipGranter выше).
+// VIP-проверка завязана на сайт-админов (см. isVipGranter выше):
+// роль 'admin' в БД либо legacy-ники bootstrap. Роль выдаётся через
 async function requireVipGranter(req, res, cb) {
   try {
     const me = await getUser(req.user.username.toLowerCase());
@@ -2071,830 +1755,100 @@ function adminSanitizeUser(u) {
 }
 
 
-// Инфо о командах межклубного турнира (id/название/число участников клуба) —
-// нужно фронту для выбора команды и отображения турнирной сетки/составов.
-function getInterclubTeamsInfo(t) {
-  if (!t.isInterclub) return undefined;
-  return (t.teamIds || [])
-    .map(id => clubs.find(c => c.id === id))
-    .filter(Boolean)
-    .map(c => ({ id: c.id, name: c.name, memberCount: c.memberCount || (c.members || []).length }));
-}
-
-
-// Командный зачёт межклубного турнира: суммируем очки/результаты всех игроков
-// каждой команды среди участников турнира (бан по читерству — не учитываем).
-function computeTeamStandings(t) {
-  if (!t.isInterclub) return undefined;
-  const byTeam = new Map();
-  for (const id of (t.teamIds || [])) {
-    const club = clubs.find(c => c.id === id);
-    byTeam.set(id, { teamId: id, teamName: club ? club.name : id, score: 0, wins: 0, losses: 0, draws: 0, gamesPlayed: 0, players: 0 });
-  }
-  for (const p of (t.participants || [])) {
-    if (p.anticheatBanned || !p.teamId || !byTeam.has(p.teamId)) continue;
-    const s = byTeam.get(p.teamId);
-    s.score += p.score || 0;
-    s.wins += p.wins || 0;
-    s.losses += p.losses || 0;
-    s.draws += p.draws || 0;
-    s.gamesPlayed += p.gamesPlayed || 0;
-    s.players += 1;
-  }
-  return [...byTeam.values()].sort((a, b) => b.score - a.score || b.wins - a.wins);
-}
-
-
-function sanitizeTournament(t) {
-  const sorted = [...(t.participants || [])].filter(p => !p.anticheatBanned).sort((a, b) => b.score - a.score || b.wins - a.wins);
-  return { ...t, participants: sorted, blacklist: undefined, status: getTournamentStatus(t, Date.now()), createdByIsAdmin: usersCache.get((t.createdBy || '').toLowerCase())?.role === 'admin', teams: getInterclubTeamsInfo(t), teamStandings: computeTeamStandings(t) };
-}
-
-
-function getTournamentStatus(t, now) {
-  if (now < t.startsAt) return 'upcoming';
-  if (now < t.endsAt)   return 'active';
-  return 'finished';
-}
+// getInterclubTeamsInfo / computeTeamStandings / sanitizeTournament /
+// getTournamentStatus — в services/tournament.service.js
 
 
 function verifyToken(t) { try { return jwt.verify(t, JWT_SECRET); } catch { return null; } }
 
 
-// ── Часы партии — источник истины ТОЛЬКО сервер ────────────────
-// Раньше флаг (истечение времени) определял клиентский JS-таймер,
-// который просто присылал game_over с готовым результатом — это
-// легко подделать. Теперь сервер сам считает оставшееся время по
-// game.lastMoveAt и не доверяет клиентским заявлениям о таймауте.
-function liveClock(game, now) {
-  let { whiteTime, blackTime } = game;
-  if (game.lastMoveAt != null && whiteTime !== undefined) {
-    const elapsed = (now - game.lastMoveAt) / 1000;
-    if (game.turn === 'white') whiteTime = Math.max(0, whiteTime - elapsed);
-    else                       blackTime = Math.max(0, blackTime - elapsed);
-  }
-  return { whiteTime, blackTime };
-}
-
-
-// Партия считается "реально сыгранной" для статистики (/api/stats) и
-// профиля (gamesPlayed/wins/losses/draws/рейтинг) только если сделан
-// хотя бы 1 полный ход — то есть сходили и белые, и чёрные (минимум
-// 2 полухода в game.moves). Иначе, например, когда игрок вышел до
-// ответного хода соперника, партия не должна засорять статистику.
-function hasFullMove(game) {
-  return Array.isArray(game.moves) && game.moves.length >= 2;
-}
-
-
-async function endGameAuthoritative(gameId, game, result, reason) {
-  if (!activeGames.has(gameId) && !tournamentGames.has(gameId)) return; // уже завершена
-  activeGames.delete(gameId);
-  tournamentGames.delete(gameId);
-  const isTournament = !!game.tournamentId;
-  if (isTournament) {
-    const t = tournaments.find(t => t.id === game.tournamentId);
-    if (t) await finishTournamentGame(t, game, result, reason);
-  } else if (hasFullMove(game)) {
-    await recordGame(game, result, reason);
-    await updateStats(game.white, game.black, result, game.rated !== false);
-  }
-  const payload = { gameId, result, reason, white: game.white, black: game.black };
-  [findSocketByUsername(game.white), findSocketByUsername(game.black)].forEach(s => s?.emit('game_ended', payload));
-}
-
-
-// Каждую секунду проверяем все активные партии на падение флага —
-// независимо от того, что показывает (или не показывает) клиент.
-setInterval(() => {
-  const now = Date.now();
-  for (const [gameId, game] of activeGames.entries()) {
-    if (game.whiteTime === undefined || game.blackTime === undefined) continue;
-    const { whiteTime, blackTime } = liveClock(game, now);
-    if (whiteTime <= 0) endGameAuthoritative(gameId, game, 'black', 'timeout').catch(e => console.error('[Clock]', e.message));
-    else if (blackTime <= 0) endGameAuthoritative(gameId, game, 'white', 'timeout').catch(e => console.error('[Clock]', e.message));
-  }
-}, 1000);
-
-
 function findSocketByUsername(username) {
   // Было: линейный перебор всей карты sessions на каждый вызов (O(n)).
   // Стало: прямой доступ по индексу usernameToSocketId (O(1)).
-  const id = usernameToSocketId.get(username.toLowerCase());
-  if (!id) return null;
-  const sock = io.sockets.sockets.get(id);
-  if (!sock) { usernameToSocketId.delete(username.toLowerCase()); return null; }
-  return sock;
+  //
+  // Multi-socket: у юзера может быть несколько легитимных сокетов одновременно
+  // (основной app.js + DM-сокет header.js). Возвращаем fanout-эмиттер: emit()
+  // доставляет событие ВСЕМ сокетам юзера, disconnect() отключает все. Все
+  // существующие вызовы вида s?.emit(...) / if (sock) sock.emit(...) работают
+  // без изменений — но больше не зависят от того, какой из сокетов юзера
+  const low = String(username).toLowerCase();
+  const ids = usernameToSocketId.get(low);
+  if (!ids || ids.size === 0) return null;
+  const sockets = [];
+  for (const id of ids) {
+    const s = io.sockets.sockets.get(id);
+    if (s) sockets.push(s);
+  }
+  if (!sockets.length) { usernameToSocketId.delete(low); return null; }
+  return {
+    emit(event, ...args) { for (const s of sockets) s.emit(event, ...args); },
+    disconnect()         { for (const s of sockets) s.disconnect(true); },
+    get size()           { return sockets.length; },
+  };
 }
 
 
 // ── Приватные события только для админов ──────────────────────
-// Раньше данные жалоб/античита рассылались через ad-hoc циклы —
-// вынесено в одну функцию, чтобы гарантировать: эти сокет-события
-// НИКОГДА не попадают обычным пользователям (утечка в Network).
 async function emitToAdmins(event, payload) {
+  // Multi-socket: у одного админа может быть несколько сокетов/сессий —
+  // дедуплицируем по нику, чтобы каждый админ получил событие один раз.
+  const seen = new Set();
   for (const [, sess] of sessions.entries()) {
-    const u = usersCache.get(sess.username.toLowerCase());
+    const low = sess.username.toLowerCase();
+    if (seen.has(low)) continue;
+    const u = usersCache.get(low);
     if (u?.role !== 'admin') continue;
+    seen.add(low);
     const sock = findSocketByUsername(sess.username);
     if (sock) sock.emit(event, payload);
   }
 }
 
 
-async function recordGame(game, result, reason) {
-  // Товарищеские (нерейтинговые) партии тоже сохраняются в историю — просто
-  // без пересчёта рейтинга (см. updateStats и её вызовы ниже). Турнирные
-  // партии всегда рейтинговые.
-  const rated = game.tournamentId ? true : (game.rated !== false);
-  await db(`
-    INSERT INTO games (id, white, black, result, reason, moves, time_control, ended_at, berserk, accuracy, tournament_id, rated)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
-    ON CONFLICT (id) DO NOTHING
-  `, [game.id, game.white, game.black, result, reason,
-      JSON.stringify(game.moves || []), game.timeControl || null,
-      Date.now(), JSON.stringify(game.berserk || null),
-      JSON.stringify(game.accuracy || null), game.tournamentId || null, rated]);
-}
-
-
-const RATING_SERVICE_URL = process.env.RATING_SERVICE_URL || 'http://127.0.0.1:8081/api/rating/calculate';
-
-// Считает новые рейтинги через Go-сервис. Если он недоступен, падаем
-// на прежнюю JS-формулу, чтобы партия не зависла из-за отказа Go.
-async function calcNewRatings(wRating, bRating, result) {
-  try {
-    const res = await fetch(RATING_SERVICE_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ whiteRating: wRating, blackRating: bRating, result }),
-      signal: AbortSignal.timeout(2000),
-    });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    const data = await res.json();
-    return { white: data.whiteRating, black: data.blackRating };
-  } catch (e) {
-    console.error('[Rating] Go-сервис недоступен, считаю на JS:', e.message);
-    const K = 32;
-    const expW = 1 / (1 + Math.pow(10, (bRating - wRating) / 400));
-    const sW = result === 'white' ? 1 : result === 'black' ? 0 : 0.5;
-    return {
-      white: Math.round(wRating + K * (sW - expW)),
-      black: Math.round(bRating + K * ((1 - sW) - (1 - expW))),
-    };
-  }
-}
-
-
-async function updateStats(white, black, result, rated = true) {
-  const w = await getUser(white.toLowerCase());
-  const b = await getUser(black.toLowerCase());
-  if (!w || !b) return;
-  w.gamesPlayed++; b.gamesPlayed++;
-  if (result === 'white')      { w.wins++; b.losses++; }
-  else if (result === 'black') { b.wins++; w.losses++; }
-  else                         { w.draws++; b.draws++; }
-  // Товарищеская партия: счётчики побед/поражений/партий обновляются как
-  // обычно, но сам рейтинг (Elo) не пересчитывается.
-  if (rated) {
-    const { white: newW, black: newB } = await calcNewRatings(w.rating, b.rating, result);
-    w.rating = Math.max(100, newW);
-    b.rating = Math.max(100, newB);
-  }
-  await saveUser(w); await saveUser(b);
-}
-
-
-// Грейс-период после завершения партии: даже если пара уже готова,
-// игрока не спариваем ещё REMATCH_GRACE_PERIOD мс — чтобы он успел
-// вернуться на страницу турнира и, если хочет, нажать "Пауза" ДО того,
-// как придёт game_start и клиент редиректнет его в новую партию.
-// Отменяется мгновенно, если игрок сам нажал "Играть" (см. tournament_seek/tournament_waiting).
-const REMATCH_GRACE_PERIOD = 8000;
-
-
-function tryPairTournamentPlayers(tournament) {
-  const now = Date.now();
-  if (getTournamentStatus(tournament, now) !== 'active') return;
-  const waiting = tournament.participants.filter(p =>
-    p.waiting && !p.left && !p.currentGameId && !p.anticheatBanned &&
-    (!p.nextEligibleAt || now >= p.nextEligibleAt)
-  );
-  if (waiting.length < 2) return;
-
-  const games = tournament.games;
-
-  // Считаем сколько раз каждая пара уже играла друг с другом
-  function gamesPlayed(a, b) {
-    return games.filter(g =>
-      (g.white === a && g.black === b) || (g.white === b && g.black === a)
-    ).length;
-  }
-
-  // Межклубный турнир: игроки одной команды (клуба) друг с другом не спариваются.
-  function sameTeam(pa, pb) {
-    return tournament.isInterclub && pa.teamId && pb.teamId && pa.teamId === pb.teamId;
-  }
-
-  // Кто был последним соперником игрока
-  function lastOpponent(username) {
-    for (let k = games.length - 1; k >= 0; k--) {
-      const g = games[k];
-      if (g.white === username) return g.black;
-      if (g.black === username) return g.white;
-    }
-    return null;
-  }
-
-  // Сортируем: кто дольше ждёт — тот первым получает партию
-  waiting.sort((a, b) => (a.lastGameAt || 0) - (b.lastGameAt || 0));
-
-  const paired = new Set();
-
-  for (let i = 0; i < waiting.length; i++) {
-    if (paired.has(waiting[i].username)) continue;
-    const pi = waiting[i];
-    const piLastOpp = lastOpponent(pi.username);
-
-    // Выбираем лучшего соперника:
-    // 1. Меньше всего сыграно партий вместе (равенство)
-    // 2. Не был последним соперником (чередование)
-    // 3. Кто дольше ждёт (справедливость)
-    let bestJ = -1;
-    let bestScore = Infinity;
-
-    for (let j = i + 1; j < waiting.length; j++) {
-      if (paired.has(waiting[j].username)) continue;
-      const pj = waiting[j];
-      if (sameTeam(pi, pj)) continue; // одноклубники не играют друг с другом
-      const played = gamesPlayed(pi.username, pj.username);
-      const isLastOpp = pj.username === piLastOpp ? 1 : 0;
-      // Меньше score — лучше пара
-      const score = played * 10 + isLastOpp * 1000;
-      if (score < bestScore) {
-        bestScore = score;
-        bestJ = j;
-      }
-    }
-
-    if (bestJ === -1) continue; // bye — сыграет следующим
-
-    paired.add(pi.username);
-    paired.add(waiting[bestJ].username);
-    pi.waiting = false;
-    waiting[bestJ].waiting = false;
-    startTournamentGame(tournament, pi, waiting[bestJ]);
-  }
-  // При нечётном числе один игрок остаётся в waiting (bye) и получит партию следующим
-}
-
-
-const FIRST_MOVE_TIMEOUT = 20 * 1000;
- // время на первый ход — общее для белых и чёрных
-
-function startTournamentGame(tournament, p1, p2) {
-  const gameId = uuidv4();
-  const p1Last = [...tournament.games].reverse().find(g => g.white === p1.username || g.black === p1.username);
-  let white, black;
-  if (!p1Last || p1Last.black === p1.username) { white = p1.username; black = p2.username; }
-  else { white = p2.username; black = p1.username; }
-  const wR = usersCache.get(white.toLowerCase())?.rating ?? '?';
-  const bR = usersCache.get(black.toLowerCase())?.rating ?? '?';
-  const [tcBaseT, tcIncTStr] = tournament.timeControl.split('+');
-  const tcIncT = Number(tcIncTStr);
-  const tcSecT = tcBaseT && tcBaseT.endsWith('s') ? (Number(tcBaseT.slice(0, -1)) || 15) : (Number(tcBaseT) || 10) * 60;
-  const now = Date.now();
-  const game = {
-    id: gameId, tournamentId: tournament.id, white, black,
-    turn: 'white', moves: [], createdAt: now, lastActivity: now,
-    timeControl: tournament.timeControl, whiteTime: tcSecT, blackTime: tcSecT,
-    tcIncrement: tcIncT || 0, lastMoveAt: now,
-    berserk: { white: false, black: false }, moveCounts: { white: 0, black: 0 },
-    _board: serverChess.startBoard(),
-    firstMoveDeadline: now + FIRST_MOVE_TIMEOUT,
-    isInterclub: !!tournament.isInterclub,
-  };
-  activeGames.set(gameId, game);
-  tournamentGames.set(gameId, game);
-  p1.currentGameId = gameId; p2.currentGameId = gameId;
-  const payload = (color, opp, oppRating) => ({
-    gameId, color, opponent: opp, opponentRating: oppRating,
-    timeControl: tournament.timeControl,
-    tournamentId: tournament.id, tournamentName: tournament.name,
-    isInterclub: !!tournament.isInterclub,
-    firstMoveDeadline: game.firstMoveDeadline,
-  });
-  const ws = findSocketByUsername(white);
-  const bs = findSocketByUsername(black);
-  if (ws) ws.emit('game_start', payload('white', black, bR));
-  if (bs) bs.emit('game_start', payload('black', white, wR));
-  saveTournament(tournament).catch(() => {});
-  io.to(`tournament_${tournament.id}`).emit('tournament_update', sanitizeTournament(tournament));
-}
-
-
-async function finishTournamentGame(tournament, game, result, reason) {
-  const now = Date.now();
-  const wp = tournament.participants.find(p => p.username === game.white);
-  const bp = tournament.participants.find(p => p.username === game.black);
-  if (wp) { wp.currentGameId = null; wp.lastGameAt = now; wp.gamesPlayed++; }
-  if (bp) { bp.currentGameId = null; bp.lastGameAt = now; bp.gamesPlayed++; }
-  const isInTime = now < tournament.endsAt;
-  const berserkCondition = game.moveCounts?.white >= 7 && game.moveCounts?.black >= 7;
-  if (isInTime && wp && bp) {
-    if (result === 'white') {
-      wp.wins++; bp.losses++; bp.streak = 0; bp.flame = false;
-      const bonus = game.berserk?.white && berserkCondition ? 1 : 0;
-      wp.score += (wp.flame ? 4 : 2) + bonus; wp.streak++; wp.flame = wp.streak >= 2;
-    } else if (result === 'black') {
-      bp.wins++; wp.losses++; wp.streak = 0; wp.flame = false;
-      const bonus = game.berserk?.black && berserkCondition ? 1 : 0;
-      bp.score += (bp.flame ? 4 : 2) + bonus; bp.streak++; bp.flame = bp.streak >= 2;
-    } else {
-      wp.score += wp.flame ? 2 : 1; bp.score += bp.flame ? 2 : 1;
-      wp.draws++; bp.draws++; wp.streak = 0; bp.streak = 0; wp.flame = false; bp.flame = false;
-    }
-  }
-  tournament.games.push({ id: game.id, white: game.white, black: game.black, result, reason, moves: game.moves, timeControl: game.timeControl, endedAt: now, berserk: game.berserk, accuracy: game.accuracy || null });
-  checkAnticheat(tournament, game, wp, bp, result);
-  // В общую таблицу games и в личную статистику/профиль игрока (updateStats)
-  // партия попадает, только если сделан хотя бы 1 полный ход — сама турнирная
-  // логика (пары, счёт турнира, история встреч выше) при этом не меняется.
-  if (hasFullMove(game)) {
-    await recordGame(game, result, reason);
-    await updateStats(game.white, game.black, result);
-  }
-  // Если партия завершилась из-за неявки на первый ход — сторону, не сделавшую
-  // ход (при timeout_firstmove это всегда белые, т.к. первый ход за ними),
-  // не возвращаем в очередь автоматически: ставим на паузу, новую пару даём
-  // только после того, как игрок сам нажмёт "Играть".
-  // Просрочивший первый ход — проигравшая сторона в этой партии (result — цвет победителя)
-  const afkColor = reason === 'timeout_firstmove' ? (result === 'white' ? 'black' : 'white') : null;
-  // nextEligibleAt — до этого момента игрок формально "в поиске" (waiting=true,
-  // баннер и кнопка "Пауза" на странице турнира уже показываются), но
-  // tryPairTournamentPlayers его пока пропускает — см. REMATCH_GRACE_PERIOD выше.
-  const nextEligibleAt = now + REMATCH_GRACE_PERIOD;
-  if (wp && !wp.left && !wp.anticheatBanned && now < tournament.endsAt) {
-    if (afkColor === 'white') { wp.waiting = false; wp.paused = true; wp.nextEligibleAt = 0; }
-    else { wp.waiting = true; wp.paused = false; wp.nextEligibleAt = nextEligibleAt; }
-  }
-  if (bp && !bp.left && !bp.anticheatBanned && now < tournament.endsAt) {
-    if (afkColor === 'black') { bp.waiting = false; bp.paused = true; bp.nextEligibleAt = 0; }
-    else { bp.waiting = true; bp.paused = false; bp.nextEligibleAt = nextEligibleAt; }
-  }
-  await saveTournament(tournament);
-  io.to(`tournament_${tournament.id}`).emit('tournament_update', sanitizeTournament(tournament));
-  // Первая попытка — заспарит других игроков, у которых грейс-период уже истёк
-  // или которых не касался (например "bye"-игрок, ждавший своей очереди).
-  setTimeout(() => tryPairTournamentPlayers(tournament), 500);
-  // Вторая попытка — уже после того, как грейс-период для только что
-  // освободившихся игроков истечёт (если они сами не поставили паузу).
-  setTimeout(() => tryPairTournamentPlayers(tournament), REMATCH_GRACE_PERIOD + 500);
-}
-
-
-const ANTICHEAT_THRESHOLD = 95, ANTICHEAT_STREAK_BAN = 3;
-
-function checkAnticheat(tournament, game, wp, bp) {
-  const acc = game.accuracy; if (!acc) return;
-  if (wp && !wp.anticheatBanned) {
-    const highAcc = (acc.white || 0) >= ANTICHEAT_THRESHOLD;
-    wp._acHighAccGames = highAcc ? (wp._acHighAccGames || 0) + 1 : 0;
-    if (wp._acHighAccGames >= ANTICHEAT_STREAK_BAN) anticheatBan(tournament, wp.username);
-  }
-  if (bp && !bp.anticheatBanned) {
-    const highAcc = (acc.black || 0) >= ANTICHEAT_THRESHOLD;
-    bp._acHighAccGames = highAcc ? (bp._acHighAccGames || 0) + 1 : 0;
-    if (bp._acHighAccGames >= ANTICHEAT_STREAK_BAN) anticheatBan(tournament, bp.username);
-  }
-}
-
-function anticheatBan(tournament, username) {
-  const p = tournament.participants.find(p => p.username === username);
-  if (!p || p.anticheatBanned) return;
-  p.anticheatBanned = true; p.waiting = false; p.left = true; p.currentGameId = null;
-  let compensated = 0;
-  for (const g of tournament.games) {
-    const oppName = g.white === username ? g.black : g.black === username ? g.white : null;
-    if (!oppName) continue;
-    // Помечаем партию как аннулированную
-    g.anticheatBanned = true;
-    const opp = tournament.participants.find(p => p.username === oppName && !p.anticheatBanned);
-    if (!opp) continue;
-    const bannedWon = (g.white === username && g.result === 'white') || (g.black === username && g.result === 'black');
-    const bannedDraw = g.result === 'draw';
-    if (bannedWon) {
-      opp.score += 2; opp.wins++; opp.losses = Math.max(0, opp.losses - 1);
-      compensated++;
-      const s = findSocketByUsername(oppName);
-      if (s) s.emit('anticheat_compensation', { message: `${username} забанен за читы. Ваше поражение аннулировано (+2 очка)!`, tournamentId: tournament.id });
-    } else if (bannedDraw) {
-      // За ничью сопернику дают +1 очко компенсации
-      opp.score = Math.max(0, opp.score - 1); // убираем очко ничьей
-      opp.draws = Math.max(0, opp.draws - 1);
-      opp.wins++; opp.score += 2; // засчитываем победу
-      compensated++;
-      const s = findSocketByUsername(oppName);
-      if (s) s.emit('anticheat_compensation', { message: `${username} забанен за читы. Ваша ничья переведена в победу (+1 очко)!`, tournamentId: tournament.id });
-    }
-  }
-  io.to(`tournament_${tournament.id}`).emit('anticheat_ban', { username, tournamentId: tournament.id, tournamentName: tournament.name, message: `⚠️ ${username} забанен за использование компьютерной помощи.` });
-  const sock = findSocketByUsername(username);
-  if (sock) sock.emit('tournament_banned', { message: 'Вы заблокированы в этом турнире за использование компьютерной помощи.' });
-  saveTournament(tournament).catch(() => {});
-}
-
-
-function startGame(acceptorSocket, challenge) {
-  const gameId = uuidv4();
-  let white, black;
-  if (challenge.color === 'white')      { white = challenge.from; black = acceptorSocket.username; }
-  else if (challenge.color === 'black') { white = acceptorSocket.username; black = challenge.from; }
-  else { if (Math.random() > 0.5) { white = challenge.from; black = acceptorSocket.username; } else { white = acceptorSocket.username; black = challenge.from; } }
-  const [tcBase, tcIncStr] = challenge.timeControl.split('+');
-  const tcInc = Number(tcIncStr);
-  const tcSec = tcBase && tcBase.endsWith('s') ? (Number(tcBase.slice(0, -1)) || 15) : (Number(tcBase) || 10) * 60;
-  const gameNow = Date.now();
-  // Товарищеская партия: challenge.rated === false явно выставляется при
-  // создании вызова (post_challenge / challenge_user). По умолчанию — рейтинговая.
-  const rated = challenge.rated !== false;
-  const game = { id: gameId, white, black, turn: 'white', moves: [], createdAt: gameNow, lastActivity: gameNow, timeControl: challenge.timeControl, whiteTime: tcSec, blackTime: tcSec, tcIncrement: tcInc || 0, lastMoveAt: gameNow, _board: serverChess.startBoard(), rated };
-  activeGames.set(gameId, game);
-  const wR = usersCache.get(white.toLowerCase())?.rating ?? '?';
-  const bR = usersCache.get(black.toLowerCase())?.rating ?? '?';
-  const ws = findSocketByUsername(white); const bs = findSocketByUsername(black);
-  if (ws) ws.emit('game_start', { gameId, color: 'white', opponent: black, opponentRating: bR, timeControl: game.timeControl, rated });
-  if (bs) bs.emit('game_start', { gameId, color: 'black', opponent: white, opponentRating: wR, timeControl: game.timeControl, rated });
-}
-
-
-setInterval(async () => {
-  const now = Date.now();
-  for (const t of tournaments) {
-    const status = getTournamentStatus(t, now);
-    if (status === 'active') {
-      // При первом тике активного турнира — ставим всех незанятых участников в waiting
-      if (!t._startNotified) {
-        t._startNotified = true;
-        let anyChanged = false;
-        for (const p of t.participants) {
-          if (!p.left && !p.anticheatBanned && !p.currentGameId && !p.waiting && !p.paused) {
-            p.waiting = true;
-            anyChanged = true;
-          }
-        }
-        if (anyChanged) {
-          await saveTournament(t);
-          io.to(`tournament_${t.id}`).emit('tournament_update', sanitizeTournament(t));
-          // Уведомляем участников о старте
-          for (const p of t.participants) {
-            if (!p.left && !p.anticheatBanned) {
-              const s = findSocketByUsername(p.username);
-              if (s) s.emit('tournament_started', { tournamentId: t.id, name: t.name });
-            }
-          }
-        }
-      }
-
-      for (const [gameId, game] of tournamentGames.entries()) {
-        if (game.tournamentId !== t.id) continue;
-        if (game.firstMoveDeadline && now > game.firstMoveDeadline) {
-          if (game.moves.length === 0) {
-            // Белые не сделали первый ход — поражение белых
-            console.log(`[Tournament] Первый ход просрочен: ${game.white} (белые) в игре ${gameId}`);
-            const ws = findSocketByUsername(game.white);
-            const bs = findSocketByUsername(game.black);
-            const payload = { gameId, result: 'black', reason: 'timeout_firstmove' };
-            if (ws) ws.emit('game_ended', payload);
-            if (bs) bs.emit('game_ended', payload);
-            await finishTournamentGame(t, game, 'black', 'timeout_firstmove');
-            tournamentGames.delete(gameId);
-            activeGames.delete(gameId);
-          } else if (game.moves.length === 1) {
-            // Белые сходили, чёрные не сделали свой первый ход — поражение чёрных
-            console.log(`[Tournament] Первый ход просрочен: ${game.black} (чёрные) в игре ${gameId}`);
-            const ws = findSocketByUsername(game.white);
-            const bs = findSocketByUsername(game.black);
-            const payload = { gameId, result: 'white', reason: 'timeout_firstmove' };
-            if (ws) ws.emit('game_ended', payload);
-            if (bs) bs.emit('game_ended', payload);
-            await finishTournamentGame(t, game, 'white', 'timeout_firstmove');
-            tournamentGames.delete(gameId);
-            activeGames.delete(gameId);
-          }
-        }
-      }
-      tryPairTournamentPlayers(t);
-    }
-    if (status === 'finished' && !t.winner && t.participants.length > 0) {
-      const sorted = [...t.participants].filter(p => !p.anticheatBanned).sort((a, b) => b.score - a.score || b.wins - a.wins);
-      t.winner = sorted[0]?.username || null;
-      await saveTournament(t);
-      io.to(`tournament_${t.id}`).emit('tournament_finished', { winner: t.winner, tournament: t });
-      io.emit('tournament_finished_notify', { id: t.id, name: t.name, winner: t.winner });
-    }
-  }
-}, 3000);
-
-
-setInterval(async () => {
-  const twoYearsAgo = Date.now() - 2 * 365 * 24 * 60 * 60 * 1000;
-  for (let i = tournaments.length - 1; i >= 0; i--) {
-    const t = tournaments[i];
-    if (t.endsAt && t.endsAt < twoYearsAgo) { tournaments.splice(i, 1); await deleteTournamentFromDB(t.id); }
-  }
-}, 24 * 60 * 60 * 1000);
-
-
-const serverChess = (() => {
-  const EMPTY = null;
-  const START_POS = [
-    ['R','w'],['N','w'],['B','w'],['Q','w'],['K','w'],['B','w'],['N','w'],['R','w'],
-    ['P','w'],['P','w'],['P','w'],['P','w'],['P','w'],['P','w'],['P','w'],['P','w'],
-    ...Array(32).fill(EMPTY),
-    ['P','b'],['P','b'],['P','b'],['P','b'],['P','b'],['P','b'],['P','b'],['P','b'],
-    ['R','b'],['N','b'],['B','b'],['Q','b'],['K','b'],['B','b'],['N','b'],['R','b'],
-  ];
-  function startBoard() { return { squares: [...START_POS], turn: 'w', castling: { wK: true, wQ: true, bK: true, bQ: true }, epSquare: -1 }; }
-  function cloneBoard(b) { return { squares: [...b.squares], turn: b.turn, castling: { ...b.castling }, epSquare: b.epSquare }; }
-  function file(sq) { return sq % 8; } function rank(sq) { return Math.floor(sq / 8); } function sq_(r, f) { return r * 8 + f; }
-  function isEnemy(piece, color) { return piece && piece[1] !== color; }
-  function isEmpty(squares, s) { return squares[s] === EMPTY; }
-  function addIfValid(moves, squares, color, from, to) { if (to < 0 || to > 63) return; if (squares[to] && squares[to][1] === color) return; moves.push({ from, to }); }
-  function slideMoves(moves, squares, color, from, dirs) { for (const [dr, df] of dirs) { let r = rank(from) + dr, f = file(from) + df; while (r >= 0 && r < 8 && f >= 0 && f < 8) { const to = sq_(r, f); if (squares[to]) { if (squares[to][1] !== color) moves.push({ from, to }); break; } moves.push({ from, to }); r += dr; f += df; } } }
-  function pseudoLegalMoves(board, fromSq) {
-    const { squares, turn, epSquare } = board;
-    const piece = squares[fromSq]; if (!piece || piece[1] !== turn) return [];
-    const [type, color] = piece; const moves = [];
-    if (type === 'P') {
-      const dir = color === 'w' ? 1 : -1, startRank = color === 'w' ? 1 : 6;
-      const r = rank(fromSq), f = file(fromSq);
-      const fwd = sq_(r + dir, f);
-      if (fwd >= 0 && fwd < 64 && isEmpty(squares, fwd)) { moves.push({ from: fromSq, to: fwd }); if (r === startRank) { const fwd2 = sq_(r + 2 * dir, f); if (isEmpty(squares, fwd2)) moves.push({ from: fromSq, to: fwd2 }); } }
-      for (const df of [-1, 1]) { const nf = f + df; if (nf < 0 || nf > 7) continue; const cap = sq_(r + dir, nf); if (cap >= 0 && cap < 64) { if (isEnemy(squares[cap], color)) moves.push({ from: fromSq, to: cap }); if (cap === epSquare) moves.push({ from: fromSq, to: cap, ep: true }); } }
-    } else if (type === 'N') { for (const [dr, df] of [[-2,-1],[-2,1],[-1,-2],[-1,2],[1,-2],[1,2],[2,-1],[2,1]]) { const nr = rank(fromSq) + dr, nf = file(fromSq) + df; if (nr >= 0 && nr < 8 && nf >= 0 && nf < 8) addIfValid(moves, squares, color, fromSq, sq_(nr, nf)); }
-    } else if (type === 'B') { slideMoves(moves, squares, color, fromSq, [[-1,-1],[-1,1],[1,-1],[1,1]]);
-    } else if (type === 'R') { slideMoves(moves, squares, color, fromSq, [[-1,0],[1,0],[0,-1],[0,1]]);
-    } else if (type === 'Q') { slideMoves(moves, squares, color, fromSq, [[-1,-1],[-1,1],[1,-1],[1,1],[-1,0],[1,0],[0,-1],[0,1]]);
-    } else if (type === 'K') {
-      for (const [dr, df] of [[-1,-1],[-1,0],[-1,1],[0,-1],[0,1],[1,-1],[1,0],[1,1]]) { const nr = rank(fromSq) + dr, nf = file(fromSq) + df; if (nr >= 0 && nr < 8 && nf >= 0 && nf < 8) addIfValid(moves, squares, color, fromSq, sq_(nr, nf)); }
-      if (color === 'w' && fromSq === 4) { if (board.castling.wK && isEmpty(squares,5) && isEmpty(squares,6) && squares[7]?.[0]==='R') moves.push({ from: fromSq, to: 6, castle: 'K' }); if (board.castling.wQ && isEmpty(squares,1) && isEmpty(squares,2) && isEmpty(squares,3) && squares[0]?.[0]==='R') moves.push({ from: fromSq, to: 2, castle: 'Q' }); }
-      if (color === 'b' && fromSq === 60) { if (board.castling.bK && isEmpty(squares,61) && isEmpty(squares,62) && squares[63]?.[0]==='R') moves.push({ from: fromSq, to: 62, castle: 'K' }); if (board.castling.bQ && isEmpty(squares,57) && isEmpty(squares,58) && isEmpty(squares,59) && squares[56]?.[0]==='R') moves.push({ from: fromSq, to: 58, castle: 'Q' }); }
-    }
-    return moves;
-  }
-  function isSquareAttacked(squares, sq, byColor) {
-    const opp = byColor;
-    for (const df of [-1, 1]) { const pr = rank(sq) + (opp === 'w' ? -1 : 1), pf = file(sq) + df; if (pr >= 0 && pr < 8 && pf >= 0 && pf < 8) { const p = squares[sq_(pr, pf)]; if (p && p[0] === 'P' && p[1] === opp) return true; } }
-    for (const [dr, df] of [[-2,-1],[-2,1],[-1,-2],[-1,2],[1,-2],[1,2],[2,-1],[2,1]]) { const r = rank(sq) + dr, f = file(sq) + df; if (r >= 0 && r < 8 && f >= 0 && f < 8) { const p = squares[sq_(r, f)]; if (p && p[0] === 'N' && p[1] === opp) return true; } }
-    for (const [dr, df] of [[-1,0],[1,0],[0,-1],[0,1]]) { let r = rank(sq) + dr, f = file(sq) + df; while (r >= 0 && r < 8 && f >= 0 && f < 8) { const p = squares[sq_(r, f)]; if (p) { if (p[1] === opp && (p[0] === 'R' || p[0] === 'Q')) return true; break; } r += dr; f += df; } }
-    for (const [dr, df] of [[-1,-1],[-1,1],[1,-1],[1,1]]) { let r = rank(sq) + dr, f = file(sq) + df; while (r >= 0 && r < 8 && f >= 0 && f < 8) { const p = squares[sq_(r, f)]; if (p) { if (p[1] === opp && (p[0] === 'B' || p[0] === 'Q')) return true; break; } r += dr; f += df; } }
-    for (const [dr, df] of [[-1,-1],[-1,0],[-1,1],[0,-1],[0,1],[1,-1],[1,0],[1,1]]) { const r = rank(sq) + dr, f = file(sq) + df; if (r >= 0 && r < 8 && f >= 0 && f < 8) { const p = squares[sq_(r, f)]; if (p && p[0] === 'K' && p[1] === opp) return true; } }
-    return false;
-  }
-  function findKing(squares, color) { for (let i = 0; i < 64; i++) { if (squares[i] && squares[i][0] === 'K' && squares[i][1] === color) return i; } return -1; }
-  function isInCheck(squares, color) { const kp = findKing(squares, color); if (kp < 0) return true; return isSquareAttacked(squares, kp, color === 'w' ? 'b' : 'w'); }
-  function applyMove(board, move) {
-    const b = cloneBoard(board); const piece = b.squares[move.from]; const [type, color] = piece; const opp = color === 'w' ? 'b' : 'w';
-    b.squares[move.to] = piece; b.squares[move.from] = EMPTY; b.epSquare = -1;
-    if (type === 'P' && move.ep) { b.squares[move.to + (color === 'w' ? -8 : 8)] = EMPTY; }
-    if (type === 'P' && Math.abs(move.to - move.from) === 16) { b.epSquare = (move.from + move.to) >> 1; }
-    if (type === 'P') { const promRank = color === 'w' ? 7 : 0; if (rank(move.to) === promRank) b.squares[move.to] = [move.promotion || 'Q', color]; }
-    if (type === 'K') { if (color === 'w') { b.castling.wK = false; b.castling.wQ = false; } else { b.castling.bK = false; b.castling.bQ = false; } if (move.castle === 'K') { b.squares[color==='w'?5:61] = b.squares[color==='w'?7:63]; b.squares[color==='w'?7:63] = EMPTY; } else if (move.castle === 'Q') { b.squares[color==='w'?3:59] = b.squares[color==='w'?0:56]; b.squares[color==='w'?0:56] = EMPTY; } }
-    if (type === 'R') { if (move.from===0) b.castling.wQ=false; if (move.from===7) b.castling.wK=false; if (move.from===56) b.castling.bQ=false; if (move.from===63) b.castling.bK=false; }
-    b.turn = opp; return b;
-  }
-  function isLegalMove(board, move) {
-    const piece = board.squares[move.from]; if (!piece || piece[1] !== board.turn) return false;
-    const pseudo = pseudoLegalMoves(board, move.from); const found = pseudo.find(m => m.to === move.to); if (!found) return false;
-    if (found.castle) { const color = piece[1], opp = color === 'w' ? 'b' : 'w', kingFrom = color === 'w' ? 4 : 60, throughSq = found.castle === 'K' ? kingFrom + 1 : kingFrom - 1; if (isInCheck(board.squares, color)) return false; if (isSquareAttacked(board.squares, throughSq, opp)) return false; if (isSquareAttacked(board.squares, move.to, opp)) return false; }
-    const after = applyMove(board, found); return !isInCheck(after.squares, piece[1]);
-  }
-  function rebuildBoard(moves) {
-    let board = startBoard();
-    for (const move of (moves || [])) {
-      try {
-        const pseudo = pseudoLegalMoves(board, move.from);
-        const found = pseudo.find(m => m.to === move.to);
-        if (!found) { console.warn('[serverChess] rebuildBoard: нет хода from', move.from, 'to', move.to); break; }
-        if (found.promotion !== undefined || move.promotion) found.promotion = move.promotion || 'Q';
-        board = applyMove(board, found);
-      } catch(e) { console.warn('[serverChess] rebuildBoard error:', e.message); break; }
-    }
-    return board;
-  }
-  function findMove(board, move) {
-    const pseudo = pseudoLegalMoves(board, move.from);
-    const found = pseudo.find(m => m.to === move.to);
-    if (!found) return move;
-    if (move.promotion) found.promotion = move.promotion;
-    return found;
-  }
-  function hasAnyLegalMove(board, color) {
-    for (let sq = 0; sq < 64; sq++) {
-      const piece = board.squares[sq];
-      if (!piece || piece[1] !== color) continue;
-      const pseudo = pseudoLegalMoves({ ...board, turn: color }, sq);
-      for (const m of pseudo) {
-        if (isLegalMove({ ...board, turn: color }, m)) return true;
-      }
-    }
-    return false;
-  }
-  function isCheckmate(board) { return isInCheck(board.squares, board.turn) && !hasAnyLegalMove(board, board.turn); }
-  function isStalemate(board) { return !isInCheck(board.squares, board.turn) && !hasAnyLegalMove(board, board.turn); }
-
-  // ── Ничьи по правилам (50 ходов / недостаток материала / троекратное
-  // повторение) — раньше сервер их вообще не проверял, потому что клиент
-  // никогда и не заявлял о них (см. баги 2/3 в board.js). Теперь сервер
-  // умеет перепроверить любую такую заявку по реальной истории ходов,
-  // так же как уже делает для мата/пата — иначе клиент мог бы просто
-  // соврать "ничья по повторению" в любой момент партии.
-  function isInsufficientMaterial(squares) {
-    const pieces = squares.filter(Boolean);
-    if (pieces.length === 2) return true; // K-K
-    if (pieces.length === 3) {
-      const minor = pieces.find(p => p[0] === 'B' || p[0] === 'N');
-      if (minor) return true; // K+B-K or K+N-K
-    }
-    return false;
-  }
-  // Отпечаток позиции для правила повторения: расстановка + очередь хода +
-  // права рокировки + клетка взятия на проходе (без счётчиков ходов).
-  function positionKey(board) {
-    return board.squares.map(p => p ? p[0] + p[1] : '-').join('') + '|' + board.turn + '|'
-      + (board.castling.wK?'1':'0') + (board.castling.wQ?'1':'0') + (board.castling.bK?'1':'0') + (board.castling.bQ?'1':'0')
-      + '|' + board.epSquare;
-  }
-  // Реплеим партию с начала, считая: (а) сколько раз встречалась текущая
-  // позиция — для троекратного повторения, (б) полуходов с последнего
-  // взятия/хода пешки — для правила 50 ходов.
-  function replayForDrawRules(moves) {
-    let board = startBoard();
-    const counts = new Map();
-    counts.set(positionKey(board), 1);
-    let halfmove = 0;
-    for (const move of (moves || [])) {
-      const pseudo = pseudoLegalMoves(board, move.from);
-      const found = pseudo.find(m => m.to === move.to);
-      if (!found) break;
-      const piece = board.squares[move.from];
-      const isCapture = !!board.squares[move.to] || found.ep;
-      const isPawn = piece && piece[0] === 'P';
-      if (found.promotion !== undefined || move.promotion) found.promotion = move.promotion || 'Q';
-      board = applyMove(board, found);
-      halfmove = (isCapture || isPawn) ? 0 : halfmove + 1;
-      const key = positionKey(board);
-      counts.set(key, (counts.get(key) || 0) + 1);
-    }
-    return { board, repetitions: counts.get(positionKey(board)) || 1, halfmove };
-  }
-  function isThreefoldRepetition(moves) { return replayForDrawRules(moves).repetitions >= 3; }
-  function isFiftyMoveRule(moves) { return replayForDrawRules(moves).halfmove >= 100; }
-
-  return { startBoard, isLegalMove, applyMove, cloneBoard, rebuildBoard, findMove, isCheckmate, isStalemate, hasAnyLegalMove, isInsufficientMaterial, isThreefoldRepetition, isFiftyMoveRule };
-})();
-
-
 const limiterSocketConnect = new RateLimiter(60_000, 200);
 
 
+// ── Мониторинг: задержка event loop и очередь на соединение с БД ──────────
+// Пишет в лог ТОЛЬКО при проблеме: p99 задержки цикла > 50 мс или запросы ждут
+// свободного соединения из пула.
+const { monitorEventLoopDelay } = require('perf_hooks');
+const loopDelay = monitorEventLoopDelay({ resolution: 20 });
+loopDelay.enable();
+setInterval(() => {
+  const p99 = loopDelay.percentile(99) / 1e6;
+  const max = loopDelay.max / 1e6;
+  if (p99 > 50 || pool.waitingCount > 0) {
+    console.warn(`[perf] event loop p99=${p99.toFixed(0)}ms max=${max.toFixed(0)}ms | pool total=${pool.totalCount} idle=${pool.idleCount} waiting=${pool.waitingCount}`);
+  }
+  loopDelay.reset();
+}, 30000).unref();
+
+
 async function main() {
+  if (!JWT_SECRET || typeof JWT_SECRET !== 'string' || JWT_SECRET.length < 32 || /change_me|changeme|secret$/i.test(JWT_SECRET)) {
+    console.error('❌ FATAL: JWT_SECRET не задан/слишком короткий/дефолтный. Сгенерируйте сильный секрет и укажите его в .env:');
+    console.error("   node -e \"console.log(require('crypto').randomBytes(48).toString('hex'))\"");
+    process.exit(1);
+  }
+
   console.log('🐘 Подключение к PostgreSQL...');
   await pool.query('SELECT 1');
   console.log('✅ PostgreSQL подключён');
 
+  // Индексы под частые запросы (профиль/история партий, статистика, проверка регистраций).
+  // IF NOT EXISTS — безопасно при повторных запусках. Если подобный индекс уже есть
+  // под другим именем, получится лишний, но безвредный дубликат.
+  for (const sql of [
+    'CREATE INDEX IF NOT EXISTS idx_games_white_ended ON games (white, ended_at DESC)',
+    'CREATE INDEX IF NOT EXISTS idx_games_black_ended ON games (black, ended_at DESC)',
+    'CREATE INDEX IF NOT EXISTS idx_games_ended_at ON games (ended_at)',
+    'CREATE INDEX IF NOT EXISTS idx_users_created_ip ON users (created_from_ip)',
+    'CREATE INDEX IF NOT EXISTS idx_users_created_device ON users (created_device_id)',
+  ]) {
+    await pool.query(sql).catch(e => console.warn('[index]', e.message));
+  }
+
   await loadBansFromDB();
-  await initPuzzleTables();
-  await initDurkaTables();
-  await initClubChatTable();
-  await initDonateTable();
-  await initTournamentChatTable();
-  // Клубные турниры: привязка турнира к клубу + флаг «только для участников клуба»
-  await db(`ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS club_id TEXT`);
-  await db(`ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS club_only BOOLEAN DEFAULT FALSE`);
-  await db(`CREATE INDEX IF NOT EXISTS idx_tournaments_club_id ON tournaments(club_id)`);
-  // Межклубные турниры: is_interclub — флаг, team_ids — JSON-массив id клубов-команд (макс. 175).
-  await db(`ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS is_interclub BOOLEAN DEFAULT FALSE`);
-  await db(`ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS team_ids JSONB DEFAULT '[]'`);
-  await db(`CREATE INDEX IF NOT EXISTS idx_tournaments_is_interclub ON tournaments(is_interclub)`);
-  await db(`
-    CREATE TABLE IF NOT EXISTS deleted_usernames (
-      username_low TEXT PRIMARY KEY,
-      deleted_at   BIGINT NOT NULL
-    )
-  `);
-  // Описание профиля и внешние рейтинги (ФШР/FIDE)
-  await db(`ALTER TABLE users ADD COLUMN IF NOT EXISTS bio TEXT DEFAULT ''`);
-  await db(`ALTER TABLE users ADD COLUMN IF NOT EXISTS fshr_rating INT`);
-  await db(`ALTER TABLE users ADD COLUMN IF NOT EXISTS fide_rating INT`);
-  // 2FA по email при входе
-  await db(`ALTER TABLE users ADD COLUMN IF NOT EXISTS two_factor_enabled BOOLEAN DEFAULT FALSE`);
-  // VIP-значок: временный статус (метка времени окончания в мс), выдаётся вручную
-  // из админ-панели только chesshome и Marina64 (см. isVipGranter/requireVipGranter).
-  await db(`ALTER TABLE users ADD COLUMN IF NOT EXISTS vip_until BIGINT`);
-  // Значки профиля (победитель сезона и т.п.): JSON-массив id из USER_BADGES,
-  // выдаются/снимаются вручную из админ-панели.
-  await db(`ALTER TABLE users ADD COLUMN IF NOT EXISTS badges JSONB DEFAULT '[]'`);
-  // Теневой бан: в отличие от обычного banned (который блокирует ЛЮБОЕ
-  // действие и виден самому юзеру), shadow_banned НИЧЕГО не блокирует —
-  // человек продолжает пользоваться сайтом как обычно, но его сообщения
-  // (публичный чат и ЛС) реально видит только он сам и админы; для всех
-  // остальных они как будто не отправлялись. При этом на публичном
-  // профиле остальные пользователи видят его как забаненного (см.
-  // sanitizeUser), а сам он — нет.
-  await db(`ALTER TABLE users ADD COLUMN IF NOT EXISTS shadow_banned BOOLEAN DEFAULT FALSE`);
-  await db(`ALTER TABLE users ADD COLUMN IF NOT EXISTS shadow_ban_reason TEXT`);
-  // Помечает ЛС, отправленные во время теневого бана — такие сообщения
-  // хранятся (для админ-аудита), но не показываются получателю (см.
-  // /api/dm/send и /api/dm/messages/:partner).
-  await db(`ALTER TABLE dm_messages ADD COLUMN IF NOT EXISTS shadow_hidden BOOLEAN DEFAULT FALSE`);
-  // То же самое, но для глобального чата — раньше shadow_hidden/emoji/vip
-  // для сообщений публичного чата существовали только в оперативной памяти
-  // (в globalChat), а не в БД. Из-за этого после pm2 restart all/перезапуска
-  // процесса вся история чата теряла эти пометки: теневые сообщения
-  // "рассекречивались", а vip-значки и emoji рядом с ником пропадали, пока
-  // человек не написал что-то новое (см. loadChat/saveChatMsg). Сообщения,
-  // отправленные ДО этой миграции, задним числом эти поля не получат —
-  // взять их неоткуда, они просто не сохранялись раньше.
-  await db(`ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS shadow_hidden BOOLEAN DEFAULT FALSE`);
-  await db(`ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS emoji TEXT DEFAULT ''`);
-  await db(`ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS vip BOOLEAN DEFAULT FALSE`);
-  // Товарищеские (нерейтинговые) партии: старые записи считаются рейтинговыми
-  await db(`ALTER TABLE games ADD COLUMN IF NOT EXISTS rated BOOLEAN DEFAULT TRUE`);
-  // Создание таблицы для дневника разработки (перенесено сюда из глобальной области)
-  await db(`
-    CREATE TABLE IF NOT EXISTS dev_diary (
-      id         TEXT PRIMARY KEY,
-      author     TEXT NOT NULL,
-      title      TEXT NOT NULL,
-      content    TEXT NOT NULL,
-      created_at BIGINT NOT NULL
-    )
-  `);
-
-  await db(`
-    CREATE TABLE IF NOT EXISTS dev_diary_reactions (
-      entry_id     TEXT NOT NULL,
-      username_low TEXT NOT NULL,
-      emoji        TEXT NOT NULL,
-      created_at   BIGINT NOT NULL,
-      PRIMARY KEY (entry_id, username_low)
-    )
-  `);
-  await db(`CREATE INDEX IF NOT EXISTS idx_ddr_entry ON dev_diary_reactions(entry_id)`);
-
-  await db(`
-    CREATE TABLE IF NOT EXISTS dev_diary_comments (
-      id           TEXT PRIMARY KEY,
-      entry_id     TEXT NOT NULL,
-      username     TEXT NOT NULL,
-      username_low TEXT NOT NULL,
-      content      TEXT NOT NULL,
-      created_at   BIGINT NOT NULL
-    )
-  `);
-  await db(`CREATE INDEX IF NOT EXISTS idx_ddc_entry ON dev_diary_comments(entry_id, created_at ASC)`);
-  await db(`CREATE INDEX IF NOT EXISTS idx_ddc_user  ON dev_diary_comments(username_low, created_at DESC)`);
-
-  await db(`
-    CREATE TABLE IF NOT EXISTS dev_diary_comment_bans (
-      username_low TEXT PRIMARY KEY,
-      created_at   BIGINT NOT NULL
-    )
-  `);
-
-  // Аудит-лог просмотров переписок админами (см. /api/admin/dm/*).
-  await db(`
-    CREATE TABLE IF NOT EXISTS admin_dm_audit (
-      id         TEXT PRIMARY KEY,
-      admin      TEXT NOT NULL,
-      target     TEXT NOT NULL,
-      partner    TEXT,
-      action     TEXT NOT NULL,
-      created_at BIGINT NOT NULL
-    )
-  `);
-  await db(`CREATE INDEX IF NOT EXISTS idx_admin_dm_audit_target ON admin_dm_audit(target, created_at DESC)`);
-  await db(`CREATE INDEX IF NOT EXISTS idx_admin_dm_audit_admin  ON admin_dm_audit(admin, created_at DESC)`);
-
-  // Общий лог всех значимых действий админов (бан/разбан, IP-баны, VIP,
-  // задачи, системные сообщения, жалобы, обращения и т.п.) — максимальный
-  // уровень контроля: видно, кто из админов что сделал и когда.
-  await db(`
-    CREATE TABLE IF NOT EXISTS admin_action_log (
-      id         TEXT PRIMARY KEY,
-      admin      TEXT NOT NULL,
-      action     TEXT NOT NULL,
-      target     TEXT,
-      details    TEXT,
-      created_at BIGINT NOT NULL
-    )
-  `);
-  await db(`CREATE INDEX IF NOT EXISTS idx_admin_action_log_admin  ON admin_action_log(admin, created_at DESC)`);
-  await db(`CREATE INDEX IF NOT EXISTS idx_admin_action_log_target ON admin_action_log(target, created_at DESC)`);
-  await db(`CREATE INDEX IF NOT EXISTS idx_admin_action_log_action ON admin_action_log(action, created_at DESC)`);
-
   await loadChat();
   await loadTournaments();
   await loadTournamentChats();
@@ -2902,53 +1856,11 @@ async function main() {
   await loadClubChats();
   await loadForum();
   await loadBlog();
-  // БАГ: эти два вызова отсутствовали, из-за чего newsPosts/newsAuthors
-  // оставались пустыми в памяти после каждого рестарта (pm2 restart и т.п.),
-  // хотя в таблицах news_posts/news_authors в Postgres данные не терялись —
-  // просто не подгружались обратно при старте процесса.
   await loadNewsAuthors();
   await loadNews();
 
-  await db(`
-    CREATE TABLE IF NOT EXISTS follows (
-      follower    TEXT NOT NULL,
-      following   TEXT NOT NULL,
-      created_at  BIGINT NOT NULL,
-      PRIMARY KEY (follower, following)
-    )
-  `);
-  await db(`CREATE INDEX IF NOT EXISTS idx_follows_follower ON follows(follower)`);
-  await db(`CREATE INDEX IF NOT EXISTS idx_follows_following ON follows(following)`);
-
-  // Апелляции / обращения (тикеты) в поддержку
-  await db(`
-    CREATE TABLE IF NOT EXISTS appeals (
-      id           TEXT PRIMARY KEY,
-      username     TEXT NOT NULL,
-      reason       TEXT NOT NULL,
-      status       TEXT NOT NULL DEFAULT 'open',
-      awaiting     TEXT NOT NULL DEFAULT 'admin',
-      created_at   BIGINT NOT NULL,
-      updated_at   BIGINT NOT NULL
-    )
-  `);
-  await db(`CREATE INDEX IF NOT EXISTS idx_appeals_user ON appeals(username, created_at DESC)`);
-  await db(`CREATE INDEX IF NOT EXISTS idx_appeals_status ON appeals(status, updated_at DESC)`);
-
-  await db(`
-    CREATE TABLE IF NOT EXISTS appeal_messages (
-      id           TEXT PRIMARY KEY,
-      appeal_id    TEXT NOT NULL,
-      author       TEXT NOT NULL,
-      is_admin     BOOLEAN NOT NULL DEFAULT FALSE,
-      message      TEXT NOT NULL,
-      created_at   BIGINT NOT NULL
-    )
-  `);
-  await db(`CREATE INDEX IF NOT EXISTS idx_appeal_msgs ON appeal_messages(appeal_id, created_at ASC)`);
-
   if (!clubs.find(c => c.id === 'chesshome-official')) {
-    const offClub = { id: 'chesshome-official', name: 'ChessHome', description: 'Официальный клуб шахматной платформы Chess Home.', createdAt: new Date().toISOString(), createdBy: 'ChessHome', admins: ['ChessHome'], members: ['ChessHome'], memberCount: 1, official: true };
+    const offClub = { id: 'chesshome-official', name: 'ChessHome', description: 'Официальный клуб шахматной платформы Chess Home.', createdAt: Date.now(), createdBy: 'ChessHome', admins: ['ChessHome'], members: ['ChessHome'], memberCount: 1, official: true };
     clubs.push(offClub); await saveClub(offClub);
   }
   for (const adminName of ['chesshome', 'marina64']) {
@@ -2964,7 +1876,7 @@ async function main() {
 }
 
 // ── Экспорт всего, что нужно routes.js и sockets.js ────────────
-module.exports = {
+Object.assign(module.exports, {
   express,
   http,
   Server,
@@ -2975,20 +1887,9 @@ module.exports = {
   path,
   fs,
   cors,
-  Pool,
-  multer,
   pool,
   db,
   withTransaction,
-  Resend,
-  pendingPasswordChanges,
-  pendingDeletions,
-  pendingLogins,
-  TWO_FA_RESEND_COOLDOWN_MS,
-  twoFactorLastSent,
-  sendPasswordChangeEmail,
-  sendTwoFactorLoginEmail,
-  sendDeleteAccountEmail,
   BAD_NICK_WORDS,
   normNick,
   nickHasBadWord,
@@ -3041,7 +1942,6 @@ module.exports = {
   clubChatBans,
   getClubChat,
   getClubChatBans,
-  initClubChatTable,
   loadClubChats,
   saveClubChatMsg,
   deleteClubChatMsgsByUser,
@@ -3061,7 +1961,6 @@ module.exports = {
   getTournamentChatMutes,
   isTournamentChatOpen,
   canModerateTournamentChat,
-  initTournamentChatTable,
   loadTournamentChats,
   saveTournamentChatMsg,
   wipeTournamentChatMsgsByUser,
@@ -3101,6 +2000,8 @@ module.exports = {
   ipBanMiddleware,
   getIP,
   isLocalIP,
+  isTrustedProxyPeer,
+  cleanIpHeader,
   vpnCheckCache,
   VPN_CACHE_TTL,
   isVpnOrProxy,
@@ -3109,12 +2010,12 @@ module.exports = {
   JS_SRC_RE,
   sendVersionedHtml,
   LICHESS_TOKEN,
-  YUKASSA_SHOP_ID,
-  YUKASSA_SECRET_KEY,
   SITE_URL,
-  initDonateTable,
+  sniffImageMime,
   loginFailStreaks,
   getLoginFailStreak,
+  getUsernameFailTotal,
+  getUsernameLockUntil,
   bumpLoginFailStreak,
   clearLoginFailStreak,
   limiterQuests,
@@ -3132,9 +2033,9 @@ module.exports = {
   countTodayByUser,
   makeSlug,
   forumViewSessions,
+  trackForumView,
   handleUnfollow,
   blogAuthMiddleware,
-  blogAdminMiddleware,
   isBlogAdmin,
   decodeBlogField,
   blogSanitize,
@@ -3155,12 +2056,11 @@ module.exports = {
   uploadImage,
   handleEditClub,
   handleDeleteClub,
-  initPuzzleTables,
-  initDurkaTables,
+  getCurrentSeasonDay,
   durkaKeyMiddleware,
+  safeSecretEqual,
   parsePuzzleSolution,
   handleDeletePuzzle,
-  SPA_ROUTES,
   handleDeleteDevDiaryEntry,
   handleDeleteDevDiaryComment,
   authMiddleware,
@@ -3185,12 +2085,9 @@ module.exports = {
   FIRST_MOVE_TIMEOUT,
   startTournamentGame,
   finishTournamentGame,
-  ANTICHEAT_THRESHOLD,
-  ANTICHEAT_STREAK_BAN,
-  checkAnticheat,
   anticheatBan,
   startGame,
   serverChess,
   limiterSocketConnect,
   main,
-};
+});

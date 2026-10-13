@@ -1,0 +1,970 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Игра с компьютером — Chess Home</title>
+<meta name="description" content="Играйте в шахматы против компьютера: пять уровней, от новичка до Stockfish 16. Все расчёты — прямо в вашем браузере.">
+<link rel="stylesheet" href="/css/main.css">
+<link rel="icon" type="image/png" href="/img/logo/favicon.png">
+<script src="/js/utils.js"></script>
+<script src="/js/i18n.js"></script>
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript">
+    (function(m,e,t,r,i,k,a){
+        m[i]=m[i]||function(){(m[i].a=m[i].a||[]).push(arguments)};
+        m[i].l=1*new Date();
+        for (var j = 0; j < document.scripts.length; j++) {if (document.scripts[j].src === r) { return; }}
+        k=e.createElement(t),a=e.getElementsByTagName(t)[0],k.async=1,k.src=r,a.parentNode.insertBefore(k,a)
+    })(window, document,'script','https://mc.yandex.ru/metrika/tag.js?id=112544904', 'ym');
+
+    ym(112544904, 'init', {ssr:true, webvisor:true, clickmap:true, ecommerce:"dataLayer", referrer: document.referrer, url: location.href, accurateTrackBounce:true, trackLinks:true});
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/112544904" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+<!-- /Yandex.Metrika counter -->
+
+<style>
+  /* Все стили страницы лежат под префиксом .vsc — с остальным сайтом не пересекаются */
+  .vsc {
+    --vsc-bg: var(--bg-primary, #0e0f13);
+    --vsc-card: var(--bg-card, #1e2028);
+    --vsc-card2: var(--bg-secondary, #161820);
+    --vsc-border: var(--border, #2e3040);
+    --vsc-accent: var(--accent, #c9a84c);
+    --vsc-text: var(--text-primary, #e8e9f0);
+    --vsc-muted: var(--text-secondary, #8a8ea8);
+    --vsc-green: var(--green, #4caf72);
+    --vsc-red: var(--red, #e05555);
+    --bs: min(calc(100vh - 200px), 640px);
+    box-sizing: border-box;
+    min-height: 100vh;
+    padding: 72px 16px 32px;
+    color: var(--vsc-text);
+    background: var(--vsc-bg);
+    font-family: var(--font-body, -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif);
+  }
+  .vsc *, .vsc *::before, .vsc *::after { box-sizing: border-box; }
+  .vsc-layout {
+    max-width: 1080px; margin: 0 auto;
+    display: grid; grid-template-columns: var(--bs) minmax(320px, 400px);
+    gap: 24px; justify-content: center; align-items: start;
+  }
+  @media (max-width: 960px) {
+    .vsc { --bs: min(calc(100vw - 24px), 560px); padding-top: 68px; }
+    .vsc-layout { grid-template-columns: var(--bs); }
+  }
+
+  /* ── Полоски игроков ─────────────────────────────── */
+  .vsc-strip {
+    height: 44px; display: flex; align-items: center; gap: 10px; padding: 0 4px;
+  }
+  .vsc-pname { font-weight: 700; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .vsc-plevel { font-size: 12px; color: var(--vsc-muted); white-space: nowrap; }
+  .vsc-cap { font-size: 17px; line-height: 1; letter-spacing: -2px; color: var(--vsc-muted); min-height: 17px; flex: 1; overflow: hidden; white-space: nowrap; }
+  .vsc-cap .adv { font-size: 12px; letter-spacing: 0; margin-left: 6px; font-weight: 700; }
+  .vsc-clock {
+    margin-left: auto; min-width: 84px; text-align: center; padding: 5px 10px; border-radius: 8px;
+    font: 700 20px/1.2 ui-monospace, 'SF Mono', Consolas, monospace;
+    background: var(--vsc-card2); border: 1px solid var(--vsc-border); color: var(--vsc-muted);
+  }
+  .vsc-clock.active { color: #fff; background: #2b3a2e; border-color: var(--vsc-green); }
+  .vsc-clock.low { color: #fff; background: #5a2420; border-color: var(--vsc-red); }
+  .vsc-clock[hidden] { display: none; }
+
+  /* ── Доска ───────────────────────────────────────── */
+  .vsc-boardwrap { position: relative; width: var(--bs); }
+  .vsc-board {
+    width: var(--bs); height: var(--bs); display: grid; grid-template-columns: repeat(8, 1fr); grid-template-rows: repeat(8, 1fr);
+    border-radius: 6px; overflow: hidden; box-shadow: 0 10px 40px rgba(0,0,0,0.5);
+    touch-action: none; user-select: none; -webkit-user-select: none;
+  }
+  .sq { position: relative; display: flex; align-items: center; justify-content: center; cursor: default; }
+  .sq.light { background-color: var(--board-light, #f0d9b5); }
+  .sq.dark  { background-color: var(--board-dark, #b58863); }
+  .sq.last { box-shadow: inset 0 0 0 100px var(--board-move, rgba(201,168,76,0.35)); }
+  .sq.sel  { box-shadow: inset 0 0 0 100px var(--board-highlight, rgba(201,168,76,0.6)); }
+  .sq.check.light, .sq.check.dark { background-image: radial-gradient(circle, var(--board-check, rgba(220,60,60,0.7)) 0%, rgba(220,60,60,0.45) 45%, rgba(220,60,60,0) 78%); }
+  .sq::before { /* подписи вертикалей/горизонталей */
+    content: attr(data-r); position: absolute; top: 2px; left: 3px; font-size: calc(var(--bs) / 48);
+    font-weight: 700; pointer-events: none; z-index: 1;
+  }
+  .sq::after {
+    content: attr(data-f); position: absolute; bottom: 1px; right: 3px; font-size: calc(var(--bs) / 48);
+    font-weight: 700; pointer-events: none; z-index: 1;
+  }
+  .sq.light::before, .sq.light::after { color: var(--board-dark, #b58863); }
+  .sq.dark::before, .sq.dark::after { color: var(--board-light, #f0d9b5); }
+  .vsc-board.interactive .sq.mine { cursor: grab; }
+  .sq .dotm { position: absolute; width: 28%; height: 28%; border-radius: 50%; background: rgba(20,60,20,0.38); pointer-events: none; }
+  .sq .capm { position: absolute; inset: 4%; border-radius: 50%; border: calc(var(--bs) / 90) solid rgba(20,60,20,0.38); pointer-events: none; }
+  img.pc { width: 88%; height: 88%; position: relative; z-index: 2; pointer-events: none; -webkit-user-drag: none; }
+  .vsc-ghost { position: fixed; z-index: 100000; pointer-events: none; transform: translate(-50%, -52%); filter: drop-shadow(0 6px 8px rgba(0,0,0,0.5)); }
+  .sq.drag-src img.pc { opacity: 0.25; }
+  .vsc-cap img { width: 20px; height: 20px; margin-right: -6px; vertical-align: middle; }
+
+  /* Превращение пешки */
+  .vsc-promo {
+    position: absolute; inset: 0; z-index: 20; background: rgba(8,8,14,0.72); border-radius: 6px;
+    display: none; align-items: center; justify-content: center; backdrop-filter: blur(2px);
+  }
+  .vsc-promo.open { display: flex; }
+  .vsc-promo-box { background: var(--vsc-card); border: 1px solid var(--vsc-accent); border-radius: 14px; padding: 14px; display: flex; gap: 8px; }
+  .vsc-promo-box button {
+    width: calc(var(--bs) / 8 * 1.1); height: calc(var(--bs) / 8 * 1.1); border-radius: 10px; cursor: pointer;
+    background: var(--board-light, #f0d9b5); border: 2px solid transparent; padding: 4px; display: flex; align-items: center; justify-content: center;
+  }
+  .vsc-promo-box button img { width: 100%; height: 100%; }
+  .vsc-promo-box button:hover { border-color: var(--vsc-accent); }
+
+  /* ── Правая панель ───────────────────────────────── */
+  .vsc-panel {
+    background: var(--vsc-card); border: 1px solid var(--vsc-border); border-radius: 16px;
+    box-shadow: 0 8px 30px rgba(0,0,0,0.35); padding: 18px;
+  }
+  .vsc-panel[hidden] { display: none; }
+  .vsc-h1 { font-size: 20px; font-weight: 800; margin: 0 0 4px; }
+  .vsc-sub { font-size: 13px; color: var(--vsc-muted); margin: 0 0 14px; line-height: 1.45; }
+  .vsc-label { font-size: 11px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; color: var(--vsc-muted); margin: 16px 0 8px; }
+
+  .vsc-bots { display: flex; flex-direction: column; gap: 6px; }
+  .vsc-bot {
+    display: flex; align-items: center; gap: 12px; text-align: left; width: 100%; cursor: pointer;
+    padding: 9px 12px; border-radius: 12px; color: inherit; font: inherit;
+    background: var(--vsc-card2); border: 1px solid var(--vsc-border); transition: border-color .12s, background .12s;
+  }
+  .vsc-bot:hover { border-color: rgba(201,168,76,0.5); }
+  .vsc-bot.sel { border-color: var(--vsc-accent); background: rgba(201,168,76,0.10); }
+  .vsc-bot-ic { font-size: 26px; width: 34px; text-align: center; flex-shrink: 0; }
+  .vsc-bot-main { flex: 1; min-width: 0; }
+  .vsc-bot-name { font-weight: 700; font-size: 14.5px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .vsc-bot-lvl { font-size: 11px; font-weight: 700; padding: 1px 7px; border-radius: 20px; background: rgba(255,255,255,0.08); color: var(--vsc-muted); }
+  .vsc-bot.sel .vsc-bot-lvl { background: var(--vsc-accent); color: #1a1405; }
+  .vsc-bot-desc { font-size: 12px; color: var(--vsc-muted); margin-top: 2px; line-height: 1.35; }
+  .vsc-dots { font-size: 10px; letter-spacing: 2px; color: var(--vsc-accent); flex-shrink: 0; }
+  .vsc-dots .off { color: rgba(255,255,255,0.18); }
+
+  .vsc-tcrow { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 6px; }
+  .vsc-tcname { font-size: 12px; color: var(--vsc-muted); width: 52px; flex-shrink: 0; }
+  .vsc-chip {
+    cursor: pointer; padding: 6px 12px; border-radius: 9px; font: 700 13px/1 inherit; color: inherit;
+    background: var(--vsc-card2); border: 1px solid var(--vsc-border);
+  }
+  .vsc-chip:hover { border-color: rgba(201,168,76,0.5); }
+  .vsc-chip.sel { background: var(--vsc-accent); border-color: var(--vsc-accent); color: #1a1405; }
+
+  .vsc-colors { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .vsc-color {
+    cursor: pointer; padding: 10px 6px; border-radius: 12px; color: inherit; font: inherit; font-size: 12.5px; font-weight: 700;
+    background: var(--vsc-card2); border: 1px solid var(--vsc-border); display: flex; flex-direction: column; align-items: center; gap: 4px;
+  }
+  .vsc-color .ci { font-size: 26px; line-height: 1; height: 30px; display: flex; align-items: center; }
+  .vsc-color .ci img { width: 30px; height: 30px; }
+  .vsc-color:hover { border-color: rgba(201,168,76,0.5); }
+  .vsc-color.sel { border-color: var(--vsc-accent); background: rgba(201,168,76,0.10); }
+
+  .vsc-btn {
+    cursor: pointer; border: none; border-radius: 12px; font: inherit; font-weight: 800; font-size: 15px; color: #1a1405;
+    padding: 13px 16px; width: 100%; background: linear-gradient(135deg, #e0bd5a, #c9a84c); transition: transform .08s, filter .12s;
+  }
+  .vsc-btn:hover:not(:disabled) { filter: brightness(1.08); transform: translateY(-1px); }
+  .vsc-btn:disabled { opacity: 0.6; cursor: wait; }
+  .vsc-btn.sec {
+    background: var(--vsc-card2); color: var(--vsc-text); border: 1px solid var(--vsc-border); font-size: 13px; padding: 9px 10px; font-weight: 700;
+  }
+  .vsc-btn.sec:hover:not(:disabled) { border-color: rgba(201,168,76,0.5); transform: none; filter: none; }
+  .vsc-btn.danger { color: #ff9a93; }
+  .vsc-btn.danger.armed { background: #5a2420; color: #fff; border-color: var(--vsc-red); }
+  .vsc-start { margin-top: 18px; }
+  .vsc-note { font-size: 12px; color: var(--vsc-muted); margin-top: 10px; line-height: 1.45; text-align: center; }
+  .vsc-error { display: none; margin-top: 12px; padding: 10px 12px; border-radius: 10px; font-size: 12.5px; line-height: 1.45;
+    background: rgba(229,83,75,0.12); border: 1px solid rgba(229,83,75,0.45); color: #ffb4ae; }
+  .vsc-error.show { display: block; }
+  .vsc-error code { background: rgba(0,0,0,0.3); padding: 1px 5px; border-radius: 4px; font-size: 11.5px; word-break: break-all; }
+
+  /* Игровая панель */
+  .vsc-status { font-size: 15px; font-weight: 700; padding: 10px 12px; border-radius: 10px; background: var(--vsc-card2); border: 1px solid var(--vsc-border); margin-bottom: 12px; display: flex; align-items: center; gap: 8px; min-height: 44px; }
+  .vsc-status.think::after { content: ''; width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--vsc-accent); border-top-color: transparent; animation: vscspin .8s linear infinite; margin-left: auto; }
+  .vsc-status.win  { border-color: var(--vsc-green); background: rgba(76,175,125,0.12); }
+  .vsc-status.lose { border-color: var(--vsc-red); background: rgba(229,83,75,0.12); }
+  .vsc-status.draw { border-color: var(--vsc-accent); background: rgba(201,168,76,0.10); }
+  @keyframes vscspin { to { transform: rotate(360deg); } }
+  .vsc-moves {
+    height: 230px; overflow-y: auto; border: 1px solid var(--vsc-border); border-radius: 10px; background: var(--vsc-card2);
+    padding: 6px; font-size: 14px; display: grid; grid-template-columns: 34px 1fr 1fr; align-content: start; gap: 1px 4px;
+  }
+  .vsc-moves .no { color: var(--vsc-muted); padding: 4px 4px; text-align: right; font-size: 12.5px; }
+  .vsc-moves .mv { padding: 4px 8px; border-radius: 6px; cursor: pointer; font-weight: 600; }
+  .vsc-moves .mv:hover { background: rgba(255,255,255,0.07); }
+  .vsc-moves .mv.cur { background: var(--vsc-accent); color: #1a1405; }
+  .vsc-moves .empty { grid-column: 1 / -1; color: var(--vsc-muted); text-align: center; padding: 20px 0; font-size: 13px; }
+  .vsc-nav { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin: 10px 0; }
+  .vsc-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .vsc-actions .full { grid-column: 1 / -1; }
+  .vsc-actions[hidden], .vsc-btn[hidden] { display: none; }
+  .vsc-vs { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; font-size: 13px; color: var(--vsc-muted); }
+  .vsc-vs b { color: var(--vsc-text); }
+</style>
+</head>
+<body>
+
+<main class="vsc">
+  <div class="vsc-layout">
+
+    <!-- ═════ ДОСКА ═════ -->
+    <section>
+      <div class="vsc-strip" id="strip-top">
+        <span class="vsc-pname" id="top-name"></span>
+        <span class="vsc-plevel" id="top-level"></span>
+        <span class="vsc-cap" id="top-cap"></span>
+        <span class="vsc-clock" id="top-clock" hidden>--:--</span>
+      </div>
+
+      <div class="vsc-boardwrap">
+        <div class="vsc-board" id="vsc-board"></div>
+        <div class="vsc-promo" id="vsc-promo"><div class="vsc-promo-box" id="vsc-promo-box"></div></div>
+      </div>
+
+      <div class="vsc-strip" id="strip-bottom">
+        <span class="vsc-pname" id="bot-name"></span>
+        <span class="vsc-plevel" id="bot-level"></span>
+        <span class="vsc-cap" id="bot-cap"></span>
+        <span class="vsc-clock" id="bot-clock" hidden>--:--</span>
+      </div>
+    </section>
+
+    <!-- ═════ ПАНЕЛЬ НАСТРОЕК ═════ -->
+    <aside>
+      <div class="vsc-panel" id="panel-setup">
+        <h1 class="vsc-h1">🖥️ Игра с компьютером</h1>
+        <p class="vsc-sub">Выберите соперника, контроль времени и цвет. Все расчёты идут в вашем браузере — ничего не отправляется на сервер.</p>
+
+        <div class="vsc-label">Соперник</div>
+        <div class="vsc-bots" id="bots"></div>
+
+        <div class="vsc-label">Контроль времени</div>
+        <div id="tcs"></div>
+
+        <div class="vsc-label">Ваш цвет</div>
+        <div class="vsc-colors" id="colors">
+          <button class="vsc-color" data-c="w" type="button"><span class="ci"><img src="/img/pieces/wK.svg" alt=""></span>Белые</button>
+          <button class="vsc-color" data-c="random" type="button"><span class="ci">🎲</span>Случайно</button>
+          <button class="vsc-color" data-c="b" type="button"><span class="ci"><img src="/img/pieces/bK.svg" alt=""></span>Чёрные</button>
+        </div>
+
+        <button class="vsc-btn vsc-start" id="btn-start" type="button">Начать игру</button>
+        <div class="vsc-error" id="setup-error"></div>
+        <div class="vsc-note">Партии с компьютером не влияют на рейтинг.</div>
+      </div>
+
+      <!-- ═════ ИГРОВАЯ ПАНЕЛЬ ═════ -->
+      <div class="vsc-panel" id="panel-game" hidden>
+        <div class="vsc-vs" id="game-vs"></div>
+        <div class="vsc-status" id="status">…</div>
+        <div class="vsc-moves" id="moves"></div>
+        <div class="vsc-nav">
+          <button class="vsc-btn sec" id="nav-first" type="button" title="В начало">⏮</button>
+          <button class="vsc-btn sec" id="nav-prev" type="button" title="Назад">◀</button>
+          <button class="vsc-btn sec" id="nav-next" type="button" title="Вперёд">▶</button>
+          <button class="vsc-btn sec" id="nav-last" type="button" title="К текущей позиции">⏭</button>
+        </div>
+        <div class="vsc-actions" id="actions-live">
+          <button class="vsc-btn sec" id="btn-flip" type="button">🔄 Развернуть</button>
+          <button class="vsc-btn sec" id="btn-undo" type="button">↩ Взять ход назад</button>
+          <button class="vsc-btn sec danger full" id="btn-resign" type="button">🏳 Сдаться</button>
+        </div>
+        <div class="vsc-actions" id="actions-over" hidden>
+          <button class="vsc-btn full" id="btn-rematch" type="button">Реванш</button>
+          <button class="vsc-btn sec" id="btn-newgame" type="button">Новая игра</button>
+          <button class="vsc-btn sec" id="btn-pgn" type="button">📋 Копировать PGN</button>
+          <button class="vsc-btn sec" id="btn-flip2" type="button">🔄 Развернуть</button>
+        </div>
+      </div>
+    </aside>
+  </div>
+</main>
+
+<script src="/js/header.js"></script>
+<script src="/js/pieces.js"></script>
+<script src="/js/vs-computer-core.js"></script>
+<script>
+(function () {
+  'use strict';
+  var C = window.CHCore;
+  var WHITE = 0, BLACK = 1;
+  var TCH = { 1: 'P', 2: 'N', 3: 'B', 4: 'R', 5: 'Q', 6: 'K' };
+  // Фигуры — те же SVG, что и на остальном сайте (/js/pieces.js → PIECE_IMGS)
+  function pieceSrc(type, color) { return (window.PIECE_IMGS || {})[(color ? 'b' : 'w') + TCH[type]] || ('/img/pieces/' + (color ? 'b' : 'w') + TCH[type] + '.svg'); }
+  function pieceImg(type, color, cls) { return '<img class="' + (cls || 'pc') + '" src="' + pieceSrc(type, color) + '" alt="" draggable="false">'; }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  //  НАСТРОЙКА: где лежит Stockfish 16 (WASM).
+  //  Пути перебираются по очереди; сработает первый, что загрузится.
+  //  Если у вас другой путь — задайте до загрузки страницы:
+  //     window.CH_STOCKFISH_URLS = ['/ваш/путь/stockfish-nnue-16-single.js'];
+  //  или просто впишите его первым в этот список.
+  // ─────────────────────────────────────────────────────────────────────────
+  var SF_URLS = (window.CH_STOCKFISH_URLS && window.CH_STOCKFISH_URLS.length) ? window.CH_STOCKFISH_URLS : [
+    '/js/stockfish.js',   // тот же файл, что использует страница анализа (stockfish-ui.js)
+    '/js/vendor/stockfish/stockfish-nnue-16-single.js',
+    '/js/stockfish/stockfish-nnue-16-single.js',
+    '/js/vendor/stockfish-nnue-16-single.js',
+    '/js/stockfish-nnue-16-single.js',
+    '/js/vendor/stockfish.js'
+  ];
+  var CORE_URL = '/js/vs-computer-core.js'; // тот же файл крутится в Web Worker для своих ботов
+
+  var TIME_CONTROLS = [
+    { group: 'Пуля',  items: [{ id: '1+0', base: 60, inc: 0 }, { id: '2+1', base: 120, inc: 1 }] },
+    { group: 'Блиц',  items: [{ id: '3+0', base: 180, inc: 0 }, { id: '3+2', base: 180, inc: 2 }, { id: '5+0', base: 300, inc: 0 }, { id: '5+3', base: 300, inc: 3 }] },
+    { group: 'Рапид', items: [{ id: '10+0', base: 600, inc: 0 }, { id: '10+5', base: 600, inc: 5 }, { id: '15+10', base: 900, inc: 10 }, { id: '30+0', base: 1800, inc: 0 }] },
+    { group: 'Своя',  items: [{ id: 'inf', base: 0, inc: 0, label: '∞ Без часов' }] }
+  ];
+
+  // Мини-дебютная книга: чтобы партии не начинались одинаково. Ключ — ходы партии через пробел.
+  var BOOK = {
+    '': ['e2e4', 'd2d4', 'g1f3', 'c2c4'],
+    'e2e4': ['e7e5', 'c7c5', 'e7e6', 'c7c6'],
+    'd2d4': ['d7d5', 'g8f6'],
+    'g1f3': ['d7d5', 'g8f6'],
+    'c2c4': ['e7e5', 'g8f6', 'c7c5'],
+    'e2e4 e7e5': ['g1f3'],
+    'e2e4 e7e5 g1f3': ['b8c6'],
+    'e2e4 e7e5 g1f3 b8c6': ['f1b5', 'f1c4', 'd2d4'],
+    'e2e4 c7c5': ['g1f3'],
+    'e2e4 c7c5 g1f3': ['d7d6', 'b8c6', 'e7e6'],
+    'e2e4 e7e6': ['d2d4'],
+    'e2e4 e7e6 d2d4': ['d7d5'],
+    'e2e4 c7c6': ['d2d4'],
+    'e2e4 c7c6 d2d4': ['d7d5'],
+    'd2d4 d7d5': ['c2c4', 'g1f3'],
+    'd2d4 d7d5 c2c4': ['e7e6', 'c7c6'],
+    'd2d4 g8f6': ['c2c4', 'g1f3'],
+    'd2d4 g8f6 c2c4': ['e7e6', 'g7g6'],
+    'g1f3 d7d5': ['d2d4', 'c2c4'],
+    'g1f3 g8f6': ['c2c4', 'd2d4'],
+    'c2c4 e7e5': ['b1c3'],
+    'c2c4 g8f6': ['b1c3', 'g1f3']
+  };
+
+  var $ = function (s) { return document.querySelector(s); };
+
+  // ── Состояние ─────────────────────────────────────────────────────────────
+  var settings = { bot: 'taktik', tc: '5+3', color: 'random' };
+  try {
+    var saved = JSON.parse(localStorage.getItem('ch_vsc_settings') || 'null');
+    if (saved && C.BOTS[saved.bot]) settings.bot = saved.bot;
+    if (saved && findTc(saved.tc)) settings.tc = saved.tc;
+    if (saved && (saved.color === 'w' || saved.color === 'b' || saved.color === 'random')) settings.color = saved.color;
+  } catch (e) {}
+  function saveSettings() { try { localStorage.setItem('ch_vsc_settings', JSON.stringify(settings)); } catch (e) {} }
+  function findTc(id) { for (var i = 0; i < TIME_CONTROLS.length; i++) for (var j = 0; j < TIME_CONTROLS[i].items.length; j++) if (TIME_CONTROLS[i].items[j].id === id) return TIME_CONTROLS[i].items[j]; return null; }
+
+  var G = null;      // текущая партия (null — пока не начата)
+  var token = 0;     // меняется при новой партии/отмене, чтобы отбросить «запоздавшие» ответы бота
+  var flipped = false, previewColor = WHITE;
+  var sel = null, drag = null, pendingPromo = null;
+  var userName = 'Вы';
+  try { var cu = JSON.parse(localStorage.getItem('ch_user') || 'null'); if (cu && cu.username) userName = cu.username; } catch (e) {}
+
+  // ── Доска ─────────────────────────────────────────────────────────────────
+  var boardEl = $('#vsc-board'), sqEls = [];
+  for (var bi = 0; bi < 64; bi++) { var d = document.createElement('div'); d.className = 'sq'; boardEl.appendChild(d); sqEls.push(d); }
+  var viewPos = new C.Position();
+
+  function bottomColor() { return flipped ? (G ? G.human ^ 1 : previewColor ^ 1) : (G ? G.human : previewColor); }
+
+  function layoutBoard() {
+    var bottom = bottomColor();
+    for (var i = 0; i < 64; i++) {
+      var row = Math.floor(i / 8), col = i % 8, rank, file;
+      if (bottom === WHITE) { rank = 7 - row; file = col; } else { rank = row; file = 7 - col; }
+      var el = sqEls[i];
+      el.dataset.sq = rank * 16 + file;
+      el.dataset.base = ((rank + file) & 1) ? 'light' : 'dark';
+      el.dataset.r = col === 0 ? (rank + 1) : '';
+      el.dataset.f = row === 7 ? 'abcdefgh'[file] : '';
+    }
+  }
+
+  function curFen() { return G ? G.fens[G.view] : C.START_FEN; }
+  function isLive() { return G && G.view === G.fens.length - 1; }
+  function canMove() {
+    return G && !G.over && isLive() && G.pos.side === G.human && !pendingPromo && !G.thinking;
+  }
+  function legalFrom(sq) {
+    var out = [];
+    for (var i = 0; i < G.legal.length; i++) if (C.mFrom(G.legal[i]) === sq) out.push(G.legal[i]);
+    return out;
+  }
+
+  function render() {
+    layoutBoard();
+    viewPos.setFEN(curFen());
+    var last = G ? G.lastMoves[G.view] : null;
+    var targets = {};
+    if (sel !== null && canMove()) {
+      legalFrom(sel).forEach(function (m) { targets[C.mTo(m)] = true; });
+    }
+    var kingSq = viewPos.inCheck() ? viewPos.kingSq[viewPos.side] : -1;
+    var interactive = canMove();
+    boardEl.classList.toggle('interactive', !!interactive);
+    for (var i = 0; i < 64; i++) {
+      var el = sqEls[i], sq = +el.dataset.sq, p = viewPos.board[sq];
+      var cls = 'sq ' + el.dataset.base;
+      if (last && (sq === last[0] || sq === last[1])) cls += ' last';
+      if (sel === sq) cls += ' sel';
+      if (sq === kingSq) cls += ' check';
+      if (interactive && p && (p >> 3) === G.human) cls += ' mine';
+      if (drag && drag.active && drag.from === sq) cls += ' drag-src';
+      el.className = cls;
+      var html = '';
+      if (p) html += pieceImg(p & 7, p >> 3);
+      if (targets[sq]) html += p ? '<span class="capm"></span>' : '<span class="dotm"></span>';
+      el.innerHTML = html;
+    }
+    renderStrips();
+    renderMoves();
+  }
+
+  // ── Взятые фигуры / материал ──────────────────────────────────────────────
+  var START_COUNT = { 1: 8, 2: 2, 3: 2, 4: 2, 5: 1 };
+  var PVAL = { 1: 1, 2: 3, 3: 3, 4: 5, 5: 9 };
+  function captured() {
+    var cnt = [{ 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 }, { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 }];
+    for (var sq = 0; sq < 128; sq++) {
+      if (sq & 0x88) { sq += 7; continue; }
+      var p = viewPos.board[sq]; if (!p) continue;
+      var t = p & 7; if (t === 6) continue;
+      cnt[p >> 3][t]++;
+    }
+    var res = [[], []], score = [0, 0];
+    for (var c = 0; c < 2; c++) {
+      for (var t2 = 5; t2 >= 1; t2--) {
+        var missing = Math.max(0, START_COUNT[t2] - cnt[c][t2]);
+        for (var k = 0; k < missing; k++) { res[c ^ 1].push(t2); score[c ^ 1] += PVAL[t2]; }
+      }
+    }
+    return { list: res, diff: score[0] - score[1] };
+  }
+
+  // ── Полоски игроков, часы ─────────────────────────────────────────────────
+  function botInfo() { return C.BOTS[G ? G.botId : settings.bot]; }
+  function colorOfBot() { return G ? G.human ^ 1 : previewColor ^ 1; }
+  function humanColor() { return G ? G.human : previewColor; }
+
+  function renderStrips() {
+    var bottom = bottomColor(), top = bottom ^ 1;
+    var bot = botInfo(), botCol = colorOfBot();
+    var cap = captured();
+    [[top, 'top'], [bottom, 'bot']].forEach(function (pair) {
+      var color = pair[0], id = pair[1];
+      var isBot = color === botCol;
+      $('#' + id + '-name').textContent = isBot ? bot.icon + ' ' + bot.name : userName;
+      $('#' + id + '-level').textContent = isBot ? bot.level : '';
+      var html = cap.list[color].map(function (t) { return pieceImg(t, color ^ 1, 'pc-c'); }).join('');
+      var adv = color === WHITE ? cap.diff : -cap.diff;
+      if (adv > 0) html += '<span class="adv">+' + adv + '</span>';
+      $('#' + id + '-cap').innerHTML = html;
+      var ck = $('#' + id + '-clock');
+      ck.hidden = !(G && G.clocks);
+      ck.dataset.color = color;
+    });
+    updateClocks();
+  }
+
+  function fmt(ms) {
+    if (ms < 0) ms = 0;
+    var s = Math.ceil(ms / 1000);
+    if (ms < 10000) return '0:' + (ms / 1000).toFixed(1).padStart(4, '0');
+    var h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), ss = s % 60;
+    return (h ? h + ':' + String(m).padStart(2, '0') : m) + ':' + String(ss).padStart(2, '0');
+  }
+  function updateClocks() {
+    ['top', 'bot'].forEach(function (id) {
+      var ck = $('#' + id + '-clock');
+      if (ck.hidden || !G || !G.clocks) return;
+      var color = +ck.dataset.color, ms = G.clocks[color];
+      ck.textContent = fmt(ms);
+      ck.classList.toggle('active', clockRunning() && G.pos.side === color);
+      ck.classList.toggle('low', ms < 10000);
+    });
+  }
+  function clockRunning() { return G && G.clocks && !G.over && G.moves.length >= 2 && G.running; }
+
+  var tickTimer = setInterval(function () {
+    if (!clockRunning()) return;
+    var now = performance.now(), el = now - G.lastTs; G.lastTs = now;
+    var side = G.pos.side;
+    G.clocks[side] -= el;
+    if (G.clocks[side] <= 0) { G.clocks[side] = 0; updateClocks(); onFlag(side); return; }
+    updateClocks();
+  }, 100);
+
+  function onFlag(side) {
+    var winner = side ^ 1;
+    if (!G.pos.canMate(winner)) finish('1/2-1/2', 'Время вышло, но у соперника недостаточно материала — ничья');
+    else finish(winner === WHITE ? '1-0' : '0-1', side === G.human ? 'У вас закончилось время' : 'У соперника закончилось время');
+  }
+
+  // ── Список ходов ──────────────────────────────────────────────────────────
+  function renderMoves() {
+    var box = $('#moves');
+    if (!G || !G.sans.length) { box.innerHTML = '<div class="empty">Ходов пока нет</div>'; return; }
+    var h = '';
+    for (var i = 0; i < G.sans.length; i += 2) {
+      h += '<div class="no">' + (i / 2 + 1) + '.</div>';
+      h += '<div class="mv' + (G.view === i + 1 ? ' cur' : '') + '" data-v="' + (i + 1) + '">' + esc(G.sans[i]) + '</div>';
+      h += G.sans[i + 1] ? '<div class="mv' + (G.view === i + 2 ? ' cur' : '') + '" data-v="' + (i + 2) + '">' + esc(G.sans[i + 1]) + '</div>' : '<div></div>';
+    }
+    box.innerHTML = h;
+    var cur = box.querySelector('.cur');
+    if (cur) cur.scrollIntoView({ block: 'nearest' });
+    else if (G.view === G.fens.length - 1) box.scrollTop = box.scrollHeight;
+  }
+  function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+
+  function setStatus(text, cls) {
+    var el = $('#status'); el.textContent = text; el.className = 'vsc-status' + (cls ? ' ' + cls : '');
+  }
+  function refreshStatus() {
+    if (!G || G.over) return;
+    var bot = botInfo();
+    if (G.pos.side === G.human) setStatus((G.pos.inCheck() ? 'Шах! ' : '') + 'Ваш ход (' + (G.human === WHITE ? 'белые' : 'чёрные') + ')');
+    else setStatus(bot.name + ' думает…', 'think');
+  }
+
+  // ── Взаимодействие: клики и перетаскивание ───────────────────────────────
+  boardEl.addEventListener('pointerdown', function (e) {
+    if (e.button !== undefined && e.button > 0) return;
+    var el = e.target.closest('.sq'); if (!el || !canMove()) return;
+    var sq = +el.dataset.sq, p = G.pos.board[sq];
+    if (sel !== null) {
+      var cand = legalFrom(sel).filter(function (m) { return C.mTo(m) === sq; });
+      if (cand.length) { tryMove(sel, sq); return; }
+    }
+    if (p && (p >> 3) === G.human) {
+      var wasSel = sel === sq;
+      sel = sq;
+      drag = { from: sq, x: e.clientX, y: e.clientY, active: false, wasSel: wasSel, ghost: null };
+      render();
+    } else { sel = null; render(); }
+  });
+  window.addEventListener('pointermove', function (e) {
+    if (!drag) return;
+    if (!drag.active) {
+      if (Math.abs(e.clientX - drag.x) + Math.abs(e.clientY - drag.y) < 8) return;
+      drag.active = true;
+      var p = G.pos.board[drag.from];
+      var g = document.createElement('img');
+      g.className = 'vsc-ghost'; g.src = pieceSrc(p & 7, p >> 3); g.draggable = false;
+      g.style.width = g.style.height = (boardEl.clientWidth / 8 * 0.95) + 'px';
+      document.body.appendChild(g); drag.ghost = g;
+      render();
+    }
+    drag.ghost.style.left = e.clientX + 'px'; drag.ghost.style.top = e.clientY + 'px';
+  });
+  window.addEventListener('pointerup', function (e) {
+    if (!drag) return;
+    var dr = drag; drag = null;
+    if (dr.ghost) dr.ghost.remove();
+    if (dr.active) {
+      var under = document.elementFromPoint(e.clientX, e.clientY);
+      var tel = under && under.closest ? under.closest('.sq') : null;
+      if (tel && canMove()) {
+        var to = +tel.dataset.sq;
+        if (legalFrom(dr.from).some(function (m) { return C.mTo(m) === to; })) { tryMove(dr.from, to); return; }
+      }
+      sel = null; render();
+    } else if (dr.wasSel) { sel = null; render(); }
+  });
+  window.addEventListener('pointercancel', function () { if (drag) { if (drag.ghost) drag.ghost.remove(); drag = null; render(); } });
+
+  function tryMove(from, to) {
+    var cand = legalFrom(from).filter(function (m) { return C.mTo(m) === to; });
+    if (!cand.length) return;
+    if (cand.length > 1) { openPromo(cand); return; }
+    sel = null;
+    playMove(cand[0]);
+  }
+
+  function openPromo(cands) {
+    pendingPromo = cands;
+    var box = $('#vsc-promo-box'); box.innerHTML = '';
+    [5, 4, 3, 2].forEach(function (t) {
+      var m = cands.filter(function (x) { return C.mPromo(x) === t; })[0]; if (!m) return;
+      var b = document.createElement('button');
+      b.type = 'button'; b.innerHTML = pieceImg(t, G.human, 'pcp');
+      b.onclick = function (ev) { ev.stopPropagation(); closePromo(); sel = null; playMove(m); };
+      box.appendChild(b);
+    });
+    $('#vsc-promo').classList.add('open');
+  }
+  function closePromo() { pendingPromo = null; $('#vsc-promo').classList.remove('open'); }
+  $('#vsc-promo').addEventListener('click', function () { closePromo(); sel = null; render(); });
+
+  // ── Ход ───────────────────────────────────────────────────────────────────
+  function playMove(m) {
+    var mover = G.pos.side;
+    var san = G.pos.sanOf(m, G.legal);
+    // время: списываем потраченное и добавляем прибавку
+    if (G.clocks) {
+      if (G.running && G.moves.length >= 2) {
+        var now = performance.now(); G.clocks[mover] -= now - G.lastTs; G.lastTs = now;
+        if (G.clocks[mover] <= 0) { G.clocks[mover] = 0; updateClocks(); onFlag(mover); return; }
+        G.clocks[mover] += G.inc * 1000;
+      }
+    }
+    var from = C.mFrom(m), to = C.mTo(m);
+    G.pos.makeMove(m);
+    G.moves.push(C.moveToUci(m)); G.sans.push(san);
+    G.fens.push(G.pos.getFEN()); G.lastMoves.push([from, to]);
+    G.view = G.fens.length - 1;
+    G.legal = G.pos.legalMoves();
+    var key = G.pos.repetitionKey(); G.reps[key] = (G.reps[key] || 0) + 1;
+    if (G.clocks) { G.running = true; G.lastTs = performance.now(); }
+    sel = null;
+    if (!checkEnd()) {
+      render(); refreshStatus();
+      if (G.pos.side !== G.human) botMove();
+    }
+  }
+
+  function checkEnd() {
+    var p = G.pos;
+    if (!G.legal.length) {
+      if (p.inCheck()) {
+        var whiteWon = p.side === BLACK;
+        finish(whiteWon ? '1-0' : '0-1', 'Мат — победили ' + (whiteWon ? 'белые' : 'чёрные'));
+      } else finish('1/2-1/2', 'Пат — ничья');
+      return true;
+    }
+    if (p.insufficientMaterial()) { finish('1/2-1/2', 'Недостаточно материала — ничья'); return true; }
+    if (p.half >= 100) { finish('1/2-1/2', 'Правило 50 ходов — ничья'); return true; }
+    if (G.reps[p.repetitionKey()] >= 3) { finish('1/2-1/2', 'Троекратное повторение — ничья'); return true; }
+    return false;
+  }
+
+  function finish(result, reason) {
+    if (G.over) return;
+    G.over = true; G.result = result; G.thinking = false; token++;
+    abortBot();
+    var humanWon = (result === '1-0' && G.human === WHITE) || (result === '0-1' && G.human === BLACK);
+    var draw = result === '1/2-1/2';
+    var head = draw ? '🤝 Ничья' : (humanWon ? '🏆 Вы победили!' : '😔 Вы проиграли');
+    setStatus(head + ' — ' + reason, draw ? 'draw' : (humanWon ? 'win' : 'lose'));
+    $('#actions-live').hidden = true; $('#actions-over').hidden = false;
+    sel = null; closePromo();
+    render();
+  }
+
+  // ── Бот ───────────────────────────────────────────────────────────────────
+  var worker = null, workerFailed = false, reqId = 0, reqPending = null;
+
+  function ensureWorker() {
+    if (worker || workerFailed) return worker;
+    try {
+      worker = new Worker(CORE_URL);
+      worker.onmessage = function (e) {
+        var d = e.data || {};
+        if (reqPending && d.id === reqPending.id) { var r = reqPending; reqPending = null; d.type === 'error' ? r.reject(new Error(d.message)) : r.resolve(d.uci); }
+      };
+      worker.onerror = function () { workerFailed = true; worker = null; if (reqPending) { var r = reqPending; reqPending = null; r.reject(new Error('worker')); } };
+    } catch (e) { workerFailed = true; worker = null; }
+    return worker;
+  }
+
+  function ownMove(bot, timeMs) {
+    var cfg = Object.assign({}, bot.cfg, { timeMs: timeMs });
+    var w = ensureWorker();
+    if (w) {
+      return new Promise(function (resolve, reject) {
+        var id = ++reqId; reqPending = { id: id, resolve: resolve, reject: reject };
+        w.postMessage({ type: 'go', id: id, startFen: C.START_FEN, moves: G.moves.slice(), cfg: cfg });
+      }).catch(function () { return ownMoveSync(cfg); });
+    }
+    return Promise.resolve(ownMoveSync(cfg));
+  }
+  function ownMoveSync(cfg) { // запасной путь: если Web Worker недоступен
+    var p = new C.Position(); p.setFEN(C.START_FEN);
+    G.moves.forEach(function (u) { p.makeMove(p.parseUci(u)); });
+    var r = C.chooseMove(p, cfg); return r ? C.moveToUci(r.move) : null;
+  }
+
+  // Stockfish
+  var sf = { w: null, url: null, cur: null, loading: null };
+  function sfTry(url) {
+    return new Promise(function (resolve, reject) {
+      var w; try { w = new Worker(url); } catch (e) { return reject(e); }
+      var timer = setTimeout(function () { w.terminate(); reject(new Error('timeout')); }, 40000);
+      w.onerror = function () { clearTimeout(timer); w.terminate(); reject(new Error('load')); };
+      w.onmessage = function (ev) {
+        var line = typeof ev.data === 'string' ? ev.data : '';
+        if (line === 'uciok') {
+          w.postMessage('setoption name Hash value 32');
+          w.postMessage('setoption name Move Overhead value 60');
+          w.postMessage('isready');
+        } else if (line === 'readyok') {
+          clearTimeout(timer);
+          w.onmessage = sfOnMsg; w.onerror = null;
+          resolve(w);
+        }
+      };
+      w.postMessage('uci');
+    });
+  }
+  function sfOnMsg(ev) {
+    var line = typeof ev.data === 'string' ? ev.data : '';
+    if (line.indexOf('bestmove') === 0) {
+      var c = sf.cur; sf.cur = null;
+      if (c) { c.resolve(line.split(' ')[1]); c.finish(); }
+    }
+  }
+  function sfInit() {
+    if (sf.w) return Promise.resolve();
+    if (sf.loading) return sf.loading;
+    sf.loading = (async function () {
+      var tried = [];
+      for (var i = 0; i < SF_URLS.length; i++) {
+        try { sf.w = await sfTry(SF_URLS[i]); sf.url = SF_URLS[i]; return; }
+        catch (e) { tried.push(SF_URLS[i]); }
+      }
+      var err = new Error('stockfish-not-found'); err.tried = tried; throw err;
+    })();
+    sf.loading.then(null, function () { sf.loading = null; });
+    return sf.loading;
+  }
+  async function sfMove(timeInfo) {
+    if (sf.cur) { sf.w.postMessage('stop'); await sf.cur.done; }
+    var cur = {};
+    cur.done = new Promise(function (r) { cur.finish = r; });
+    var res = new Promise(function (r) { cur.resolve = r; });
+    sf.cur = cur;
+    sf.w.postMessage('position startpos' + (G.moves.length ? ' moves ' + G.moves.join(' ') : ''));
+    if (G.clocks) {
+      sf.w.postMessage('go wtime ' + Math.max(50, Math.floor(G.clocks[WHITE])) + ' btime ' + Math.max(50, Math.floor(G.clocks[BLACK])) +
+        ' winc ' + G.inc * 1000 + ' binc ' + G.inc * 1000);
+    } else {
+      sf.w.postMessage('go movetime 1500');
+    }
+    return res;
+  }
+  function abortBot() {
+    if (sf.cur && sf.w) sf.w.postMessage('stop');
+    if (reqPending) { reqPending = null; }
+    if (worker) { worker.terminate(); worker = null; } // самый надёжный способ прервать расчёт своего бота
+  }
+
+  function bookMove() {
+    var bot = botInfo(); if (bot.stars < 3) return null;
+    if (G.moves.length > 6) return null;
+    var list = BOOK[G.moves.join(' ')]; if (!list) return null;
+    var ok = list.filter(function (u) { return G.pos.parseUci(u, G.legal); });
+    return ok.length ? ok[Math.floor(Math.random() * ok.length)] : null;
+  }
+
+  async function botMove() {
+    if (!G || G.over || G.thinking) return;
+    var my = token; G.thinking = true;
+    var bot = botInfo(), t0 = performance.now(), uci = null, botColor = G.human ^ 1;
+    renderBoardInteractivityOnly();
+    try {
+      uci = bookMove();
+      if (!uci) {
+        if (bot.engine === 'stockfish') uci = await sfMove();
+        else {
+          var budget = bot.cfg.timeMs;
+          if (G.clocks) budget = Math.max(80, Math.min(budget, G.clocks[botColor] / 25 + G.inc * 700));
+          uci = await ownMove(bot, budget);
+        }
+      }
+    } catch (err) { uci = null; }
+    if (my !== token || !G || G.over) return;
+
+    // «человеческая» пауза у слабых ботов, чтобы ход не вылетал мгновенно
+    var minDelay = bot.stars <= 2 ? 700 + Math.random() * 800 : (bot.stars === 3 ? 350 + Math.random() * 500 : (G.moves.length < 7 ? 250 + Math.random() * 300 : 0));
+    if (G.clocks && G.clocks[botColor] < 15000) minDelay = 0;
+    var spent = performance.now() - t0;
+    if (spent < minDelay) await new Promise(function (r) { setTimeout(r, minDelay - spent); });
+    if (my !== token || !G || G.over) return;
+
+    G.thinking = false;
+    var m = uci ? G.pos.parseUci(uci, G.legal) : 0;
+    if (!m) m = G.legal[Math.floor(Math.random() * G.legal.length)]; // страховка
+    playMove(m);
+  }
+  function renderBoardInteractivityOnly() { boardEl.classList.remove('interactive'); }
+
+  // ── Старт / управление партией ───────────────────────────────────────────
+  function showError(html) { var e = $('#setup-error'); e.innerHTML = html; e.classList.add('show'); }
+  function clearError() { $('#setup-error').classList.remove('show'); }
+
+  async function startGame(forceHuman) {
+    clearError();
+    var bot = C.BOTS[settings.bot], btn = $('#btn-start');
+    if (bot.engine === 'stockfish') {
+      btn.disabled = true; btn.textContent = 'Загрузка Stockfish 16…';
+      try { await sfInit(); }
+      catch (err) {
+        btn.disabled = false; btn.textContent = 'Начать игру';
+        showError('Не удалось загрузить Stockfish 16. Проверьте, что файлы движка (<code>.js</code> и <code>.wasm</code>) лежат на сервере. Пробовал пути:<br><code>' +
+          (err.tried || SF_URLS).join('</code><br><code>') + '</code><br>Выберите другого соперника или поправьте <code>SF_URLS</code> в vs-computer.html.');
+        return;
+      }
+      btn.disabled = false; btn.textContent = 'Начать игру';
+    }
+    var tc = findTc(settings.tc);
+    var human = forceHuman !== undefined ? forceHuman : (settings.color === 'w' ? WHITE : settings.color === 'b' ? BLACK : (Math.random() < 0.5 ? WHITE : BLACK));
+    abortBot(); token++;
+    if (sf.w) { sf.w.postMessage('ucinewgame'); }
+    G = {
+      botId: settings.bot, human: human, tcId: tc.id,
+      inc: tc.inc, clocks: tc.base ? [tc.base * 1000, tc.base * 1000] : null, running: false, lastTs: 0,
+      pos: new C.Position(), moves: [], sans: [], fens: [C.START_FEN], lastMoves: [null], view: 0,
+      legal: null, reps: {}, over: false, result: '*', thinking: false, startedAt: new Date()
+    };
+    G.legal = G.pos.legalMoves();
+    G.reps[G.pos.repetitionKey()] = 1;
+    flipped = false; sel = null; drag = null; closePromo();
+    $('#panel-setup').hidden = true; $('#panel-game').hidden = false;
+    $('#actions-live').hidden = false; $('#actions-over').hidden = true;
+    $('#btn-undo').hidden = !!G.clocks;
+    $('#game-vs').innerHTML = '<span style="font-size:22px">' + bot.icon + '</span><span>Против <b>' + esc(bot.name) + '</b> · ' + esc(bot.level) + ' · ' + (tc.base ? tc.id : 'без часов') + '</span>';
+    render(); refreshStatus();
+    if (G.pos.side !== G.human) botMove();
+  }
+
+  function toSetup() {
+    abortBot(); token++;
+    G = null; sel = null; closePromo();
+    previewColor = settings.color === 'b' ? BLACK : WHITE; flipped = false;
+    $('#panel-game').hidden = true; $('#panel-setup').hidden = false;
+    render();
+  }
+
+  $('#btn-start').onclick = function () { startGame(); };
+  $('#btn-newgame').onclick = toSetup;
+  $('#btn-rematch').onclick = function () { startGame(G.human ^ 1); };
+  $('#btn-flip').onclick = $('#btn-flip2').onclick = function () { flipped = !flipped; render(); };
+
+  var resignTimer = null;
+  $('#btn-resign').onclick = function () {
+    var b = $('#btn-resign');
+    if (!G || G.over) return;
+    if (!b.classList.contains('armed')) {
+      b.classList.add('armed'); b.textContent = 'Нажмите ещё раз, чтобы сдаться';
+      resignTimer = setTimeout(resetResign, 3000); return;
+    }
+    resetResign();
+    finish(G.human === WHITE ? '0-1' : '1-0', 'Вы сдались');
+  };
+  function resetResign() { clearTimeout(resignTimer); var b = $('#btn-resign'); b.classList.remove('armed'); b.textContent = '🏳 Сдаться'; }
+
+  $('#btn-undo').onclick = function () {
+    if (!G || G.over || G.clocks) return;
+    var n = G.moves.length, minLen = G.human === WHITE ? 0 : 1, botTurn = G.pos.side !== G.human;
+    // наш ход: откатываем свой ход и ответ бота (−2); бот ещё думает: откатываем только свой последний ход (−1)
+    var target = botTurn ? n - 1 : n - 2;
+    if (target < minLen) return;
+    if (botTurn) { abortBot(); token++; G.thinking = false; }
+    rewindTo(target);
+  };
+  function rewindTo(len) {
+    G.moves.length = len; G.sans.length = len; G.fens.length = len + 1; G.lastMoves.length = len + 1;
+    G.pos.setFEN(G.fens[len]); G.view = len; G.legal = G.pos.legalMoves();
+    G.reps = {}; G.fens.forEach(function (f) { var k = f.split(' ').slice(0, 4).join(' '); G.reps[k] = (G.reps[k] || 0) + 1; });
+    sel = null; render(); refreshStatus();
+  }
+
+  // Навигация по ходам
+  function goView(v) {
+    if (!G) return;
+    v = Math.max(0, Math.min(G.fens.length - 1, v));
+    if (v === G.view) return;
+    G.view = v; sel = null; render();
+  }
+  $('#nav-first').onclick = function () { if (G) goView(0); };
+  $('#nav-prev').onclick = function () { if (G) goView(G.view - 1); };
+  $('#nav-next').onclick = function () { if (G) goView(G.view + 1); };
+  $('#nav-last').onclick = function () { if (G) goView(G.fens.length - 1); };
+  $('#moves').addEventListener('click', function (e) { var t = e.target.closest('.mv'); if (t) goView(+t.dataset.v); });
+  document.addEventListener('keydown', function (e) {
+    if (!G || /INPUT|TEXTAREA|SELECT/.test((e.target.tagName || ''))) return;
+    if (e.key === 'ArrowLeft') { goView(G.view - 1); e.preventDefault(); }
+    else if (e.key === 'ArrowRight') { goView(G.view + 1); e.preventDefault(); }
+    else if (e.key === 'Home') { goView(0); e.preventDefault(); }
+    else if (e.key === 'End') { goView(G.fens.length - 1); e.preventDefault(); }
+  });
+
+  // PGN
+  $('#btn-pgn').onclick = function () {
+    if (!G) return;
+    var bot = C.BOTS[G.botId], d = G.startedAt, pad = function (n) { return String(n).padStart(2, '0'); };
+    var wName = G.human === WHITE ? userName : bot.name, bName = G.human === BLACK ? userName : bot.name;
+    var tc = findTc(G.tcId);
+    var pgn = '[Event "Игра с компьютером (Chess Home)"]\n[Site "Chess Home"]\n[Date "' + d.getFullYear() + '.' + pad(d.getMonth() + 1) + '.' + pad(d.getDate()) + '"]\n' +
+      '[White "' + wName + '"]\n[Black "' + bName + '"]\n[Result "' + G.result + '"]\n[TimeControl "' + (tc.base ? tc.base + (tc.inc ? '+' + tc.inc : '') : '-') + '"]\n\n';
+    var body = '';
+    for (var i = 0; i < G.sans.length; i++) body += (i % 2 === 0 ? (i / 2 + 1) + '. ' : '') + G.sans[i] + ' ';
+    pgn += body + G.result;
+    copyText(pgn).then(function () {
+      var b = $('#btn-pgn'), old = b.textContent; b.textContent = '✓ Скопировано';
+      setTimeout(function () { b.textContent = old; }, 1600);
+    });
+  };
+  function copyText(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) return navigator.clipboard.writeText(text).catch(function () { return fallbackCopy(text); });
+    return Promise.resolve(fallbackCopy(text));
+  }
+  function fallbackCopy(text) {
+    var ta = document.createElement('textarea'); ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.select(); try { document.execCommand('copy'); } catch (e) {} ta.remove();
+  }
+
+  // ── Панель настроек ───────────────────────────────────────────────────────
+  function buildSetup() {
+    var bots = $('#bots'); bots.innerHTML = '';
+    Object.keys(C.BOTS).forEach(function (id) {
+      var b = C.BOTS[id], btn = document.createElement('button');
+      btn.type = 'button'; btn.className = 'vsc-bot'; btn.dataset.id = id;
+      var dots = ''; for (var i = 1; i <= 5; i++) dots += '<span class="' + (i <= b.stars ? '' : 'off') + '">●</span>';
+      btn.innerHTML = '<span class="vsc-bot-ic">' + b.icon + '</span>' +
+        '<span class="vsc-bot-main"><span class="vsc-bot-name">' + esc(b.name) + '<span class="vsc-bot-lvl">' + esc(b.level) + '</span></span>' +
+        '<span class="vsc-bot-desc">' + esc(b.desc) + '</span></span><span class="vsc-dots">' + dots + '</span>';
+      btn.onclick = function () { settings.bot = id; saveSettings(); syncSetupUi(); render(); clearError(); };
+      bots.appendChild(btn);
+    });
+    var tcs = $('#tcs'); tcs.innerHTML = '';
+    TIME_CONTROLS.forEach(function (g) {
+      var row = document.createElement('div'); row.className = 'vsc-tcrow';
+      row.innerHTML = '<span class="vsc-tcname">' + g.group + '</span>';
+      g.items.forEach(function (it) {
+        var c = document.createElement('button'); c.type = 'button'; c.className = 'vsc-chip'; c.dataset.id = it.id;
+        c.textContent = it.label || it.id;
+        c.onclick = function () { settings.tc = it.id; saveSettings(); syncSetupUi(); };
+        row.appendChild(c);
+      });
+      tcs.appendChild(row);
+    });
+    document.querySelectorAll('#colors .vsc-color').forEach(function (b) {
+      b.onclick = function () {
+        settings.color = b.dataset.c; saveSettings(); syncSetupUi();
+        previewColor = settings.color === 'b' ? BLACK : WHITE; flipped = false; render();
+      };
+    });
+    syncSetupUi();
+  }
+  function syncSetupUi() {
+    document.querySelectorAll('.vsc-bot').forEach(function (b) { b.classList.toggle('sel', b.dataset.id === settings.bot); });
+    document.querySelectorAll('.vsc-chip').forEach(function (b) { b.classList.toggle('sel', b.dataset.id === settings.tc); });
+    document.querySelectorAll('#colors .vsc-color').forEach(function (b) { b.classList.toggle('sel', b.dataset.c === settings.color); });
+  }
+
+  // ── Запуск ────────────────────────────────────────────────────────────────
+  previewColor = settings.color === 'b' ? BLACK : WHITE;
+  buildSetup();
+  render();
+
+})();
+</script>
+</body>
+</html>

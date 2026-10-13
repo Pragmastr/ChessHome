@@ -1,6 +1,9 @@
 <!DOCTYPE html>
 <html lang="ru">
 <head>
+<script src="/js/utils.js"></script>
+<script src="/js/api.js"></script>
+<script src="/js/toast.js"></script>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Панель Admin — Chess Home</title>
@@ -45,6 +48,9 @@
           <div id="reports-badge" style="display:none;background:var(--red);color:#fff;border-radius:20px;padding:6px 14px;font-weight:700;font-size:14px;cursor:pointer" onclick="switchTab('tab-reports')">
             🚩 <span id="reports-new-count">0</span> новых жалоб
           </div>
+          <div id="automod-badge" style="display:none;background:#e67e22;color:#fff;border-radius:20px;padding:6px 14px;font-weight:700;font-size:14px;cursor:pointer" onclick="switchTab('tab-automod')">
+            🤖 <span id="automod-new-count">0</span> на проверку
+          </div>
         </div>
       </div>
 
@@ -53,6 +59,7 @@
         <button class="tab-btn active" id="tab-dashboard" onclick="switchTab('tab-dashboard')" style="padding:10px 20px;background:none;border:none;border-bottom:2px solid var(--accent);color:var(--accent);font-weight:700;cursor:pointer;font-size:14px">📊 Дашборд</button>
         <button class="tab-btn"        id="tab-users"   onclick="switchTab('tab-users')"   style="padding:10px 20px;background:none;border:none;border-bottom:2px solid transparent;color:var(--text-secondary);cursor:pointer;font-size:14px">👥 Пользователи</button>
         <button class="tab-btn"        id="tab-reports" onclick="switchTab('tab-reports')" style="padding:10px 20px;background:none;border:none;border-bottom:2px solid transparent;color:var(--text-secondary);cursor:pointer;font-size:14px">🚩 Жалобы</button>
+        <button class="tab-btn"        id="tab-automod" onclick="switchTab('tab-automod')" style="padding:10px 20px;background:none;border:none;border-bottom:2px solid transparent;color:var(--text-secondary);cursor:pointer;font-size:14px">🤖 Автомодерация</button>
         <button class="tab-btn"        id="tab-appeals" onclick="switchTab('tab-appeals')" style="padding:10px 20px;background:none;border:none;border-bottom:2px solid transparent;color:var(--text-secondary);cursor:pointer;font-size:14px">📩 Обращения</button>
         <button class="tab-btn"        id="tab-chat"    onclick="switchTab('tab-chat')"    style="padding:10px 20px;background:none;border:none;border-bottom:2px solid transparent;color:var(--text-secondary);cursor:pointer;font-size:14px">💬 Чат</button>
         <button class="tab-btn"        id="tab-puzzles" onclick="switchTab('tab-puzzles')" style="padding:10px 20px;background:none;border:none;border-bottom:2px solid transparent;color:var(--text-secondary);cursor:pointer;font-size:14px">♟ Задачи</button>
@@ -97,6 +104,20 @@
           <button class="btn btn-ghost btn-sm" onclick="loadReports()">📋 Все</button>
         </div>
         <div id="reports-list"><div style="text-align:center;padding:40px"><div class="spinner" style="margin:0 auto"></div></div></div>
+      </div>
+
+      <!-- Вкладка: Автомодерация -->
+      <div id="panel-automod" style="display:none">
+        <div style="font-size:13px;color:var(--text-muted);margin-bottom:12px">
+          Подозрительная активность (однотипные сообщения, флуд, рассылка в личку, ссылки). Ничего не применяется само — решение за тобой:
+          <b>Пропустить</b> (ложное срабатывание, 24 часа не трогаем), <b>Теневой бан</b> (человек ничего не замечает, но его никто не видит) или <b>Бан</b>.
+        </div>
+        <div id="bot-status" style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius);padding:12px 16px;margin-bottom:16px"></div>
+        <div style="display:flex;gap:8px;margin-bottom:16px">
+          <button class="btn btn-secondary btn-sm" onclick="loadAutomod('new')">🆕 На проверке</button>
+          <button class="btn btn-ghost btn-sm" onclick="loadAutomod('resolved')">✅ Решённые</button>
+        </div>
+        <div id="automod-list"><div style="text-align:center;padding:40px"><div class="spinner" style="margin:0 auto"></div></div></div>
       </div>
 
       <!-- Вкладка: Обращения -->
@@ -185,6 +206,25 @@
 
       <!-- Вкладка: Системные сообщения -->
       <div id="panel-broadcast" style="display:none">
+        <div class="settings-section" style="margin-bottom:16px">
+          <div class="settings-title">⚠️ Готовое предупреждение игроку</div>
+          <p style="color:var(--text-muted);font-size:13px;margin:8px 0 14px;line-height:1.5">
+            Введи ник и выбери причину — текст подставится сам (его можно поправить перед отправкой). Придёт от имени «Система».
+          </p>
+          <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+            <input class="form-input" id="warn-username" placeholder="Ник игрока" style="max-width:260px" onkeydown="if(event.key==='Enter')openWarnFromTab()">
+            <button class="btn btn-primary" onclick="openWarnFromTab()">⚠️ Выбрать причину…</button>
+          </div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:12px">
+            <button class="btn btn-secondary btn-sm" onclick="openWarnFromTab('abuse')">🗣 Оскорбления</button>
+            <button class="btn btn-secondary btn-sm" onclick="openWarnFromTab('manipulation')">🎭 Манипулирование</button>
+            <button class="btn btn-secondary btn-sm" onclick="openWarnFromTab('rating_manip')">📈 Рейтинг / договорные</button>
+            <button class="btn btn-secondary btn-sm" onclick="openWarnFromTab('spam')">📢 Спам</button>
+            <button class="btn btn-secondary btn-sm" onclick="openWarnFromTab('flood')">🔁 Флуд</button>
+            <button class="btn btn-secondary btn-sm" onclick="openWarnFromTab('cheating')">🤖 Читерство</button>
+            <button class="btn btn-secondary btn-sm" onclick="openWarnFromTab('threats')">⛔ Угрозы</button>
+          </div>
+        </div>
         <div class="settings-section">
           <div class="settings-title">📨 Отправить системное сообщение</div>
           <p style="color:var(--text-muted);font-size:13px;margin:8px 0 18px;line-height:1.5">
@@ -246,6 +286,27 @@
             <input class="form-input" id="twinks-filter" placeholder="🔍 Фильтр: показать группы с ником..." style="flex:1;min-width:220px" oninput="renderTwinks()">
             <button class="btn btn-secondary btn-sm" onclick="loadTwinks()">🔄 Обновить</button>
           </div>
+        </div>
+
+        <div class="settings-section" style="margin-bottom:16px">
+          <div class="settings-title">🎯 Вероятные дубликаты <span id="twins-prob-count" style="color:var(--text-muted);font-weight:400;font-size:14px"></span></div>
+          <p style="color:var(--text-muted);font-size:12.5px;margin:8px 0 12px;line-height:1.5">
+            Оценка по нескольким независимым сигналам: серверная cookie устройства, IP и подсеть, видеокарта, экран, шрифты,
+            отрисовка canvas и звука. Совпадения у многих аккаунтов (общий Wi-Fi, одинаковые телефоны) почти ничего не весят,
+            редкие — весят много. Это вероятность того, что аккаунтами пользуется <b>один человек или одно и то же устройство</b>:
+            брата с сестрой за одним компьютером система отличить не может — для таких пар нажмите «Разные люди», и пара больше не покажется.
+            Система никого не банит.
+          </p>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:6px">
+            <label style="font-size:12.5px;color:var(--text-muted)">Показывать от</label>
+            <select class="form-input" id="twins-min" onchange="loadProbTwins()" style="width:auto">
+              <option value="0.3">30%</option><option value="0.5" selected>50%</option>
+              <option value="0.7">70%</option><option value="0.85">85%</option>
+            </select>
+            <button class="btn btn-secondary btn-sm" onclick="loadProbTwins()">🔄 Пересчитать</button>
+            <span id="twins-prob-stats" style="font-size:12px;color:var(--text-muted)"></span>
+          </div>
+          <div id="twins-prob-list" style="margin-top:10px"></div>
         </div>
 
         <div class="settings-section" style="margin-bottom:16px">
@@ -320,26 +381,61 @@
   </div>
 </div>
 
-<div id="toast-container"></div>
 <script>
-const API='/api';let currentUser=null;
+let currentUser=null;
+// apiGet/apiPost/apiPatch — глобальные, из /js/api.js (2А, унификация)
 // Токен авторизации больше не хранится в localStorage — он живёт только
 // в HttpOnly cookie (ch_token), которую браузер сам прикладывает к запросам.
-function escapeHtml(s){if(!s)return'';return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+// escapeHtml (P0, унификация): общая реализация в /js/utils.js
 function getSettings(){try{return JSON.parse(localStorage.getItem('ch_settings')||'{}');}catch{return{};}}
 function applySettings(){const s=getSettings();if(s.boardLight)document.documentElement.style.setProperty('--board-light',s.boardLight);if(s.boardDark)document.documentElement.style.setProperty('--board-dark',s.boardDark);}
-async function safeJson(res){
-  // Если сервер вместо JSON вернул HTML (например, страницу ошибки 404/502
-  // от прокси/хостинга), res.json() падает с криптичным
-  // "JSON.parse: unexpected character at line 1 column 1" — вместо этого
-  // показываем понятную ошибку с кодом статуса.
-  try { return await res.json(); }
-  catch { throw new Error('Сервер вернул некорректный ответ (код ' + res.status + '). Попробуйте ещё раз.'); }
+// safeJson() — глобальная, из /js/utils.js
+// ── Свои окна вместо системных prompt()/confirm() ──────────────────────────
+// Системные диалоги рисует сам браузер: CSS на них не влияет, и они могут
+// обрезаться/съезжать (особенно с закреплённой шапкой и при масштабе).
+function _askModal(message, opts) {
+  return new Promise(resolve => {
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'position:fixed;inset:0;z-index:100000;display:flex;align-items:center;justify-content:center;padding:16px;background:rgba(0,0,0,.65)';
+    const box = document.createElement('div');
+    box.style.cssText = 'background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius);width:100%;max-width:440px;padding:20px;box-shadow:0 12px 40px rgba(0,0,0,.5)';
+    const msg = document.createElement('div');
+    msg.style.cssText = 'font-size:15px;line-height:1.45;margin-bottom:14px;white-space:pre-wrap;word-break:break-word';
+    msg.textContent = message;
+    box.appendChild(msg);
+    let input = null;
+    if (opts.input) {
+      input = document.createElement('input');
+      input.type = 'text';
+      input.value = opts.defaultValue || '';
+      input.maxLength = 300;
+      input.style.cssText = 'width:100%;box-sizing:border-box;padding:10px 12px;margin-bottom:16px;background:var(--bg-card);color:inherit;border:1px solid var(--border);border-radius:8px;font:inherit';
+      box.appendChild(input);
+    }
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;gap:10px;justify-content:flex-end';
+    const cancel = document.createElement('button');
+    cancel.className = 'btn btn-ghost'; cancel.textContent = 'Отмена';
+    const ok = document.createElement('button');
+    ok.className = 'btn btn-primary'; ok.textContent = 'ОК';
+    row.appendChild(cancel); row.appendChild(ok); box.appendChild(row);
+    wrap.appendChild(box); document.body.appendChild(wrap);
+    const done = v => { document.removeEventListener('keydown', onKey, true); wrap.remove(); resolve(v); };
+    const accept = () => done(input ? input.value : true);
+    const reject = () => done(input ? null : false);
+    function onKey(e) {
+      if (e.key === 'Escape') { e.preventDefault(); reject(); }
+      else if (e.key === 'Enter') { e.preventDefault(); accept(); }
+    }
+    document.addEventListener('keydown', onKey, true);
+    ok.onclick = accept; cancel.onclick = reject;
+    wrap.addEventListener('mousedown', e => { if (e.target === wrap) reject(); });
+    setTimeout(() => { if (input) { input.focus(); input.select(); } else ok.focus(); }, 0);
+  });
 }
-async function apiGet(path){const res=await fetch(API+path,{credentials:'same-origin'});const data=await safeJson(res);if(!res.ok)throw new Error(data.error||'Ошибка');return data;}
-async function apiPost(path,body){const res=await fetch(API+path,{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const data=await safeJson(res);if(!res.ok)throw new Error(data.error||'Ошибка');return data;}
-async function apiPatch(path,body){const res=await fetch(API+path,{method:'PATCH',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const data=await safeJson(res);if(!res.ok)throw new Error(data.error||'Ошибка');return data;}
-function toast(msg,type='info'){const c=document.getElementById('toast-container');const el=document.createElement('div');el.className='toast '+type;el.textContent=msg;c.appendChild(el);setTimeout(()=>el.remove(),3000);}
+function askText(message, defaultValue = '') { return _askModal(message, { input: true, defaultValue }); }
+function askConfirm(message) { return _askModal(message, { input: false }); }
+// toast() — глобальная, из /js/toast.js
 function updateHeaderUI(){
   const el=document.getElementById('header-right');el.innerHTML='';
   if(currentUser){
@@ -376,6 +472,8 @@ initHeader();
 <script>
 const REASON_LABELS = {cheat:'🤖 Читы/движок', abuse:'🤬 Оскорбления', disconnect:'🔌 Дисконнекты', multiaccounting:'👥 Мульти-аккаунты', spam:'📢 Спам', other:'❓ Другое'};
 
+const SITE_OWNERS = ['chesshome', 'marina64'];
+function isOwner() { return !!currentUser && SITE_OWNERS.includes(String(currentUser.username || '').toLowerCase()); }
 async function adminInit() {
   await new Promise(r => setTimeout(r, 700));
   if (!currentUser || currentUser.role !== 'admin') {
@@ -383,13 +481,32 @@ async function adminInit() {
     return;
   }
   document.getElementById('admin-content').style.display = '';
+  if (!isOwner()) lockDmTab();
   loadDashboard();
   loadReportsBadge();
   loadAppealsBadge();
+  loadAutomodBadge();
+  setInterval(loadAutomodBadge, 30000);
+}
+
+// Вкладка «Переписки» для не-владельцев: остаётся видимой с замочком, но закрыта.
+function lockDmTab() {
+  const btn = document.getElementById('tab-dms');
+  if (btn) { btn.style.opacity = '0.55'; btn.title = 'Доступно только владельцам сайта'; }
+  const panel = document.getElementById('panel-dms');
+  if (!panel) return;
+  Array.from(panel.children).forEach(ch => { ch.style.display = 'none'; });
+  const box = document.createElement('div');
+  box.id = 'dm-locked';
+  box.style.cssText = 'text-align:center;padding:70px 20px';
+  box.innerHTML = '<div style="font-size:48px;margin-bottom:12px">🔒</div>'
+    + '<div style="font-size:18px;font-weight:700;margin-bottom:8px">Доступ закрыт</div>'
+    + '<div style="color:var(--text-muted);font-size:13.5px;line-height:1.5">Просмотр переписок доступен только владельцам сайта.</div>';
+  panel.appendChild(box);
 }
 
 function switchTab(tab) {
-  ['tab-dashboard','tab-users','tab-reports','tab-appeals','tab-chat','tab-puzzles','tab-broadcast','tab-dms','tab-twinks','tab-logs'].forEach(t => {
+  ['tab-dashboard','tab-users','tab-reports','tab-automod','tab-appeals','tab-chat','tab-puzzles','tab-broadcast','tab-dms','tab-twinks','tab-logs'].forEach(t => {
     const btn = document.getElementById(t);
     const panel = document.getElementById('panel-' + t.replace('tab-',''));
     if (t === tab) {
@@ -407,10 +524,11 @@ function switchTab(tab) {
   if (tab === 'tab-dashboard') loadDashboard();
   if (tab === 'tab-users') loadAdminUsers();
   if (tab === 'tab-reports') loadReports('new');
+  if (tab === 'tab-automod') loadAutomod('new');
   if (tab === 'tab-appeals') loadAppeals('open');
   if (tab === 'tab-chat') loadAdminChat();
   if (tab === 'tab-puzzles') puzzleLoad();
-  if (tab === 'tab-dms') loadDmAudit();
+  if (tab === 'tab-dms' && isOwner()) loadDmAudit();
   if (tab === 'tab-twinks') loadTwinks();
   if (tab === 'tab-logs') loadAdminLogs();
 }
@@ -562,7 +680,7 @@ async function puzzleLoad() {
       delBtn.style.flexShrink = '0';
       delBtn.textContent = '🗑 Удалить';
       delBtn.onclick = async () => {
-        if (!confirm('Удалить задачу «' + p.title + '»?\nЭто нельзя отменить.')) return;
+        if (!await askConfirm('Удалить задачу «' + p.title + '»?\nЭто нельзя отменить.')) return;
         try {
           // POST вместо DELETE — см. комментарий у reviewBtn выше.
           await apiPost('/admin/puzzles/' + encodeURIComponent(p.id) + '/delete', {});
@@ -601,7 +719,7 @@ async function sendSystemMessage() {
   const username = (document.getElementById('bc-username')?.value || '').trim();
   if (!text) { toast('Введите текст сообщения', 'error'); return; }
   if (target === 'user' && !username) { toast('Укажите ник пользователя', 'error'); return; }
-  if (target === 'all' && !confirm('Отправить это сообщение ВСЕМ пользователям?')) return;
+  if (target === 'all' && !await askConfirm('Отправить это сообщение ВСЕМ пользователям?')) return;
 
   const btn = document.getElementById('bc-send-btn');
   btn.disabled = true;
@@ -703,12 +821,33 @@ function renderUserList(users, container) {
     st.textContent = '★' + u.rating + ' · ' + u.gamesPlayed + ' партий · ' + u.wins + 'W/' + u.losses + 'L';
     info.appendChild(nm); info.appendChild(st); row.appendChild(info);
     const btns = document.createElement('div'); btns.style.cssText = 'display:flex;gap:6px;flex-shrink:0';
-    const canGrantVip = currentUser && ['chesshome','marina64'].includes(currentUser.username.toLowerCase());
+    const canGrantVip = currentUser && (currentUser.role === 'admin' || ['chesshome','marina64'].includes(currentUser.username.toLowerCase()));
+    if (isOwner() && u.username !== currentUser.username) {
+      if (u.role === 'admin') {
+        const ra = document.createElement('button'); ra.className='btn btn-ghost btn-sm'; ra.title='Снять роль администратора'; ra.textContent='👑 Снять админа';
+        ra.onclick = async () => {
+          if (!await askConfirm('Снять роль администратора у ' + u.username + '?')) return;
+          ra.disabled = true;
+          try { await apiPost('/admin/role', { username: u.username, grant: false }); toast('Роль администратора снята', 'success'); loadAdminUsers(); }
+          catch(e) { toast('Ошибка: ' + e.message, 'error'); ra.disabled = false; }
+        };
+        btns.appendChild(ra);
+      } else if (!u.banned) {
+        const ga = document.createElement('button'); ga.className='btn btn-ghost btn-sm'; ga.title='Выдать роль администратора'; ga.textContent='👑 Админ';
+        ga.onclick = async () => {
+          if (!await askConfirm('Выдать роль администратора ' + u.username + '?')) return;
+          ga.disabled = true;
+          try { await apiPost('/admin/role', { username: u.username, grant: true }); toast('Роль администратора выдана', 'success'); loadAdminUsers(); }
+          catch(e) { toast('Ошибка: ' + e.message, 'error'); ga.disabled = false; }
+        };
+        btns.appendChild(ga);
+      }
+    }
     if (canGrantVip) {
       if (u.vip) {
         const rv = document.createElement('button'); rv.className='btn btn-ghost btn-sm'; rv.textContent='✨ Снять VIP';
         rv.onclick = async () => {
-          if (!confirm('Снять VIP-значок у ' + u.username + '?')) return;
+          if (!await askConfirm('Снять VIP-значок у ' + u.username + '?')) return;
           rv.disabled = true;
           try { await apiPost('/admin/vip/revoke', { username: u.username }); toast('VIP снят', 'success'); loadAdminUsers(); }
           catch(e) { toast('Ошибка: ' + e.message, 'error'); rv.disabled = false; }
@@ -717,7 +856,7 @@ function renderUserList(users, container) {
       } else {
         const gv = document.createElement('button'); gv.className='btn btn-ghost btn-sm'; gv.textContent='✨ Выдать VIP';
         gv.onclick = async () => {
-          const days = prompt('На сколько дней выдать VIP-значок ' + u.username + '?', '30');
+          const days = await askText('На сколько дней выдать VIP-значок ' + u.username + '?', '30');
           if (days === null) return;
           gv.disabled = true;
           try { await apiPost('/admin/vip/grant', { username: u.username, days: parseInt(days) || 30 }); toast('VIP выдан', 'success'); loadAdminUsers(); }
@@ -751,7 +890,7 @@ function renderUserList(users, container) {
     } else {
       const b = document.createElement('button'); b.className='btn btn-danger btn-sm'; b.textContent='🚫 Бан';
       b.onclick = async () => {
-        const r=prompt('Причина бана:','Нарушение правил');
+        const r=await askText('Причина бана:','Нарушение правил');
         if(!r) return;
         b.disabled = true;
         try {
@@ -764,6 +903,11 @@ function renderUserList(users, container) {
         }
       };
       btns.appendChild(b);
+    }
+    if (u.username !== currentUser.username && !u.banned && u.role !== 'admin') {
+      const wb = document.createElement('button'); wb.className='btn btn-secondary btn-sm'; wb.textContent='⚠️ Предупредить';
+      wb.onclick = () => openWarnDialog(u.username);
+      btns.appendChild(wb);
     }
     // Теневой бан — независимая кнопка-переключатель (можно совмещать с
     // обычным баном или включать саму по себе). Не показываем самому себе.
@@ -779,7 +923,7 @@ function renderUserList(users, container) {
       } else {
         const sb = document.createElement('button'); sb.className='btn btn-ghost btn-sm'; sb.title='Пишет как обычно, но его никто не видит и не получает от него сообщений — он сам об этом не узнает'; sb.textContent='🌫️ Теневой бан';
         sb.onclick = async () => {
-          const r = prompt('Причина теневого бана для ' + u.username + ':', 'Нарушение правил');
+          const r = await askText('Причина теневого бана для ' + u.username + ':', 'Нарушение правил');
           if (!r) return;
           sb.disabled = true;
           try { await apiPost('/admin/shadowban', { username: u.username, reason: r }); toast('Теневой бан включён', 'success'); loadAdminUsers(); }
@@ -800,6 +944,235 @@ function adminSearch(q) {
   searchTimer = setTimeout(async () => {
     try { renderUserList(await apiGet('/users/search?q=' + encodeURIComponent(q)), res); } catch {}
   }, 250);
+}
+
+async function openWarnDialog(username, preferKey, onDone) {
+  let templates = [], hist = { count: 0, warnings: [] };
+  try {
+    templates = await apiGet('/admin/warning-templates');
+    hist = await apiGet('/admin/warnings/' + encodeURIComponent(username));
+  } catch (e) { toast('Ошибка: ' + e.message, 'error'); return; }
+
+  const overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.65);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
+  const box = document.createElement('div');
+  box.style.cssText = 'background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:20px;width:100%;max-width:560px;max-height:92vh;overflow-y:auto';
+  overlay.appendChild(box);
+
+  const lastW = hist.warnings[0];
+  box.innerHTML =
+    '<div style="font-size:17px;font-weight:700;margin-bottom:4px">⚠️ Предупреждение: ' + escapeHtml(username) + '</div>' +
+    '<div style="font-size:12.5px;color:var(--text-muted);margin-bottom:14px">Придёт в личные сообщения от имени «Система». Ответить на него нельзя.' +
+      (hist.count ? '<br><b style="color:#e67e22">Ранее предупреждений: ' + hist.count + '</b>' +
+        (lastW ? ' · последнее: ' + new Date(lastW.createdAt).toLocaleString('ru') + ' — ' + escapeHtml(lastW.label) + (lastW.source === 'bot' ? ' (бот)' : '') : '') : '') +
+    '</div>';
+
+  const sel = document.createElement('select');
+  sel.className = 'form-input'; sel.style.cssText = 'width:100%;margin-bottom:10px';
+  templates.forEach(t => { const o = document.createElement('option'); o.value = t.key; o.textContent = t.label; sel.appendChild(o); });
+  const ta = document.createElement('textarea');
+  ta.className = 'form-input'; ta.rows = 11; ta.maxLength = 2000;
+  ta.style.cssText = 'width:100%;resize:vertical;font-size:13px;line-height:1.45';
+  ta.placeholder = 'Текст предупреждения…';
+  box.appendChild(sel); box.appendChild(ta);
+
+  let lastTpl = '';
+  const apply = () => {
+    const t = templates.find(x => x.key === sel.value);
+    // Если текст уже правили руками — не затираем его при смене шаблона
+    if (ta.value.trim() === '' || ta.value === lastTpl) { ta.value = t ? t.text : ''; lastTpl = ta.value; }
+  };
+  sel.onchange = apply;
+  if (preferKey && templates.some(t => t.key === preferKey)) sel.value = preferKey;
+  apply();
+
+  const row = document.createElement('div');
+  row.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;margin-top:14px';
+  const cancel = document.createElement('button');
+  cancel.className = 'btn btn-ghost'; cancel.textContent = 'Отмена';
+  const send = document.createElement('button');
+  send.className = 'btn btn-primary'; send.textContent = '⚠️ Отправить';
+  row.appendChild(cancel); row.appendChild(send); box.appendChild(row);
+
+  const close = () => overlay.remove();
+  cancel.onclick = close;
+  overlay.addEventListener('mousedown', e => { if (e.target === overlay) close(); });
+  send.onclick = async () => {
+    const text = ta.value.trim();
+    if (!text) { toast('Введите текст предупреждения', 'error'); return; }
+    send.disabled = true;
+    try {
+      const r = await apiPost('/admin/warn', { username, template: sel.value, text });
+      toast('Предупреждение отправлено (всего: ' + r.count + ')', 'success');
+      close();
+      if (onDone) onDone();
+    } catch (e) { toast('Ошибка: ' + e.message, 'error'); send.disabled = false; }
+  };
+  document.body.appendChild(overlay);
+  ta.focus();
+}
+
+// Быстрый вход из вкладки «Системные сообщения»: ник + (необязательно) готовая причина
+function openWarnFromTab(key) {
+  const el = document.getElementById('warn-username');
+  const name = (el.value || '').trim();
+  if (!name) { toast('Введите ник игрока', 'error'); el.focus(); return; }
+  openWarnDialog(name, key, () => { el.value = ''; });
+}
+
+// Какой шаблон предлагать по типу флага автомодерации
+const WARN_BY_KIND = { dm_spam: 'spam', cross_post: 'spam', ad: 'spam', repeat: 'flood', flood: 'flood', links: 'links', content: 'content' };
+
+// ─── АВТОМОДЕРАЦИЯ ────────────────────────────────────────────
+const AUTOMOD_CH = (ch) => {
+  if (!ch) return '';
+  if (ch === 'global-chat') return '💬 общий чат';
+  if (ch === 'dm') return '✉️ личка';
+  if (ch === 'dev-diary') return '📓 дневник разработки';
+  if (ch === 'blog-comments') return '📰 комментарии блога';
+  if (ch === 'news-comments') return '📢 комментарии новостей';
+  if (ch === 'forum_thread') return '💭 тема форума';
+  if (ch === 'forum_reply') return '💭 ответ на форуме';
+  if (ch === 'blog_post') return '📰 статья блога';
+  if (ch === 'club') return '🏰 клуб (название/описание)';
+  if (ch === 'tournament') return '🏆 турнир (название/описание)';
+  if (ch === 'bio') return '👤 описание профиля';
+  if (ch.startsWith('club:')) return '🏰 чат клуба';
+  if (ch.startsWith('tournament:')) return '🏆 чат турнира';
+  return ch;
+};
+
+async function loadAutomodBadge() {
+  try {
+    const d = await apiGet('/admin/automod/count');
+    const badge = document.getElementById('automod-badge');
+    document.getElementById('automod-new-count').textContent = d.new;
+    badge.style.display = d.new > 0 ? '' : 'none';
+  } catch {}
+}
+
+async function loadBotStatus() {
+  const box = document.getElementById('bot-status');
+  if (!box) return;
+  try {
+    const b = await apiGet('/admin/botmoderator');
+    const modes = [['on', '🟢 Включён — баны сразу'], ['dry', '🟡 Наблюдение — без банов'], ['off', '⚪ Выключен']];
+    const act = { ban: '🚫 забанил', would_ban: '👀 забанил бы', warn: '⚠️ предупредил', would_warn: '👀 предупредил бы', limit: '⛔ лимит — не банил', undone: '↩ бан отменён' };
+    box.innerHTML = '';
+    const head = document.createElement('div');
+    head.style.cssText = 'display:flex;align-items:center;gap:10px;flex-wrap:wrap';
+    head.innerHTML = '<b>🤖 ' + escapeHtml(b.name) + '</b>';
+    const sel = document.createElement('select');
+    sel.className = 'form-input'; sel.style.cssText = 'width:auto;padding:4px 8px;font-size:13px';
+    modes.forEach(([v, t]) => { const o = document.createElement('option'); o.value = v; o.textContent = t; if (b.mode === v) o.selected = true; sel.appendChild(o); });
+    sel.onchange = async () => {
+      try { await apiPost('/admin/botmoderator', { mode: sel.value }); toast('Режим бота изменён', 'success'); loadBotStatus(); }
+      catch (e) { toast('Ошибка: ' + e.message, 'error'); }
+    };
+    head.appendChild(sel);
+    const meta = document.createElement('span');
+    meta.style.cssText = 'font-size:12px;color:var(--text-muted)';
+    meta.textContent = 'предупреждает с балла ' + (b.warnScore || 50) + ', банит с ' + b.banScore + ' · банов за час: ' + b.bansLastHour + '/' + b.maxBansPerHour;
+    head.appendChild(meta);
+    box.appendChild(head);
+    (b.recent || []).slice(0, 6).forEach(r => {
+      const row = document.createElement('div');
+      row.style.cssText = 'font-size:12.5px;padding:5px 0;border-top:1px solid var(--border);display:flex;gap:8px;align-items:center;flex-wrap:wrap';
+      row.innerHTML = '<span style="color:var(--text-muted)">' + new Date(r.t).toLocaleTimeString('ru') + '</span><span>' + (act[r.action] || escapeHtml(r.action)) +
+        ' <b>' + escapeHtml(r.user) + '</b>' + (r.score ? ' (балл ' + r.score + ')' : '') + (r.reason ? ' — ' + escapeHtml(r.reason) : '') + '</span>';
+      if (r.action === 'ban') {
+        const u = document.createElement('button');
+        u.className = 'btn btn-ghost btn-sm'; u.textContent = '↩ Отменить бан';
+        u.onclick = async () => {
+          if (!await askConfirm('Снять бан с ' + r.user + '? Бот не будет трогать его 24 часа.')) return;
+          try { await apiPost('/admin/botmoderator/undo', { username: r.user }); toast('Бан снят', 'success'); loadBotStatus(); loadAutomod('new'); }
+          catch (e) { toast('Ошибка: ' + e.message, 'error'); }
+        };
+        row.appendChild(u);
+      }
+      box.appendChild(row);
+    });
+  } catch (e) { box.innerHTML = '<span style="color:var(--red);font-size:13px">Бот: ошибка загрузки (' + escapeHtml(e.message) + ')</span>'; }
+}
+
+async function loadAutomod(status) {
+  loadBotStatus();
+  const list = document.getElementById('automod-list');
+  list.innerHTML = '<div style="text-align:center;padding:40px"><div class="spinner" style="margin:0 auto"></div></div>';
+  try {
+    const flags = await apiGet('/admin/automod/flags?status=' + (status || 'new'));
+    if (!flags.length) {
+      list.innerHTML = '<div class="empty-state"><div class="empty-state-icon">✅</div><p>' + (status === 'resolved' ? 'Решённых пока нет' : 'Подозрительной активности нет') + '</p></div>';
+      return;
+    }
+    list.innerHTML = '';
+    flags.forEach(f => {
+      const d = f.details || {};
+      const acc = f.account;
+      const card = document.createElement('div');
+      card.style.cssText = 'background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius);padding:16px;margin-bottom:12px';
+      if (f.status === 'new') card.style.borderColor = '#e67e22';
+
+      const samples = (d.samples || []).map(s =>
+        '<div style="font-size:12.5px;padding:4px 0;border-top:1px solid var(--border)">' +
+        '<span style="color:var(--text-muted)">' + new Date(s.t).toLocaleTimeString('ru') + ' · ' + escapeHtml(AUTOMOD_CH(s.ch)) + (s.to ? ' → ' + escapeHtml(s.to) : '') + '</span><br>' +
+        escapeHtml(s.text) + '</div>').join('');
+
+      const ageTxt = d.accountAgeHours != null ? (d.accountAgeHours < 48 ? d.accountAgeHours + ' ч' : Math.round(d.accountAgeHours / 24) + ' дн') : '?';
+      const resolvedLabel = { skipped: '✅ Пропущено', banned: '🚫 Забанен', shadowbanned: '👻 Теневой бан', resolved: '🗑 Контент удалён' }[f.status];
+
+      card.innerHTML =
+        '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px">' +
+          '<span style="padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700;background:rgba(230,126,34,0.2);color:#e67e22">' + escapeHtml(f.kindLabel) + '</span>' +
+          (d.isNew ? '<span style="padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700;background:rgba(224,85,85,0.2);color:var(--red)">🆕 новый аккаунт</span>' : '') +
+          (resolvedLabel ? '<span style="font-size:12px;color:var(--text-muted)">' + resolvedLabel + (f.resolvedBy ? ' · ' + escapeHtml(f.resolvedBy) : '') + '</span>' : '') +
+          '<span style="font-size:12px;color:var(--text-muted);margin-left:auto">' + new Date(f.updatedAt).toLocaleString('ru') + '</span>' +
+        '</div>' +
+        '<div style="font-size:14px;margin-bottom:6px"><a href="/profile/' + encodeURIComponent(f.username) + '" target="_blank" style="color:var(--accent);font-weight:700">' + escapeHtml(f.username) + '</a>' +
+          ' <span style="font-size:12px;color:var(--text-muted)">· аккаунту ' + ageTxt +
+          (acc ? ' · рейтинг ' + (acc.rating ?? '—') + ' · партий ' + (acc.gamesPlayed ?? 0) : '') +
+          (acc && acc.warnings ? ' · <b style="color:#e67e22">⚠ предупреждений: ' + acc.warnings + '</b>' : '') +
+          (acc && acc.banned ? ' · <b style="color:var(--red)">уже забанен</b>' : '') +
+          (acc && acc.shadowBanned ? ' · <b>теневой бан</b>' : '') +
+          ' · срабатываний: ' + (d.count || 1) + '</span></div>' +
+        (d.reasons && d.reasons.length ? '<div style="font-size:12.5px;margin-bottom:6px">🔎 ' + escapeHtml(d.reasons.join(', ')) + (d.score ? ' · балл ' + d.score : '') + '</div>' : '') +
+        (d.botNote ? '<div style="font-size:12.5px;margin-bottom:6px;color:#e67e22">🤖 ' + escapeHtml(d.botNote) + '</div>' : '') +
+        '<div style="background:var(--bg-card);border-radius:8px;padding:6px 10px;margin-bottom:12px">' + (samples || '<span style="font-size:12px;color:var(--text-muted)">нет примеров</span>') + '</div>';
+
+      if (f.status === 'new') {
+        const actions = document.createElement('div');
+        actions.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap';
+        const mk = (cls, text, fn) => {
+          const b = document.createElement('button');
+          b.className = 'btn ' + cls + ' btn-sm'; b.textContent = text;
+          b.onclick = async () => {
+            b.disabled = true;
+            try { await fn(); toast('Готово', 'success'); loadAutomod('new'); loadAutomodBadge(); }
+            catch (e) { toast('Ошибка: ' + e.message, 'error'); b.disabled = false; }
+          };
+          actions.appendChild(b);
+        };
+        if (d.content) mk('btn-secondary', '🗑 Удалить контент', () => apiPost('/admin/automod/flags/' + f.id + '/remove-content', {}));
+        if (!(acc && (acc.banned || acc.role === 'admin'))) {
+          const wb = document.createElement('button');
+          wb.className = 'btn btn-secondary btn-sm'; wb.textContent = '⚠️ Предупредить';
+          wb.onclick = () => openWarnDialog(f.username, WARN_BY_KIND[f.kind], () => loadAutomod('new'));
+          actions.appendChild(wb);
+        }
+        mk('btn-secondary', '✅ Пропустить', () => apiPost('/admin/automod/flags/' + f.id + '/skip', {}));
+        mk('btn-secondary', '👻 Теневой бан', () => apiPost('/admin/automod/flags/' + f.id + '/shadowban', {}));
+        mk('btn-danger', '🚫 Забанить', async () => {
+          const reason = await askText('Причина бана:', 'Автомодерация: ' + f.kindLabel);
+          if (!reason) throw new Error('отменено');
+          await apiPost('/admin/automod/flags/' + f.id + '/ban', { reason });
+        });
+        card.appendChild(actions);
+      }
+      list.appendChild(card);
+    });
+  } catch (e) {
+    list.innerHTML = '<p style="color:var(--red)">Ошибка загрузки: ' + escapeHtml(e.message) + '</p>';
+  }
 }
 
 async function loadReportsBadge() {
@@ -880,9 +1253,6 @@ async function loadReports(status) {
         reviewBtn.onclick = async () => {
           reviewBtn.disabled = true;
           try {
-            // Раньше здесь был PATCH — на некоторых хостингах/прокси этот метод
-            // блокируется, из-за чего сервер отвечал HTML-страницей ошибки, а не
-            // JSON, и res.json() падал. POST-эндпоинт работает надёжно.
             await apiPost('/admin/reports/' + r.id + '/status', { status: 'reviewed' });
             toast('Статус обновлён', 'success');
             loadReports(status);
@@ -899,7 +1269,7 @@ async function loadReports(status) {
       banBtn.className = 'btn btn-danger btn-sm';
       banBtn.textContent = '🚫 Забанить ' + r.targetUsername;
       banBtn.onclick = async () => {
-        const reason = prompt('Причина бана:', r.reason);
+        const reason = await askText('Причина бана:', r.reason);
         if (!reason) return;
         banBtn.disabled = true;
         try {
@@ -963,7 +1333,7 @@ async function loadAdminChat() {
       delBtn.style.flexShrink = '0';
       delBtn.textContent = '🗑';
       delBtn.onclick = async () => {
-        if (!confirm('Удалить сообщение?')) return;
+        if (!await askConfirm('Удалить сообщение?')) return;
         delBtn.disabled = true;
         try {
           // POST вместо DELETE — см. комментарий у reviewBtn выше.
@@ -1132,7 +1502,7 @@ async function adminReplyAppeal() {
 
 async function setAppealStatus(status) {
   if (!currentAppealId) return;
-  if (status === 'closed' && !confirm('Закрыть обращение?')) return;
+  if (status === 'closed' && !await askConfirm('Закрыть обращение?')) return;
   try {
     // POST вместо PATCH — см. комментарий у reviewBtn выше.
     await apiPost('/admin/appeals/' + currentAppealId + '/status', { status });
@@ -1277,6 +1647,7 @@ async function loadTwinks() {
   try {
     twinksData = await apiGet('/admin/multiaccounts');
     renderTwinks();
+    loadProbTwins();
   } catch (e) {
     document.getElementById('twinks-ip-list').innerHTML  = '<p style="color:var(--red)">Ошибка: ' + escapeHtml(e.message) + '</p>';
     document.getElementById('twinks-dev-list').innerHTML = '';
@@ -1297,6 +1668,7 @@ function renderTwinks() {
 
   renderTwinkGroupList(ipGroups,  document.getElementById('twinks-ip-list'),  'ip');
   renderTwinkGroupList(devGroups, document.getElementById('twinks-dev-list'), 'device');
+  renderProbTwins();
 }
 
 function renderTwinkGroupList(groups, container, kind) {
@@ -1365,7 +1737,7 @@ function renderTwinkUserRow(u) {
     banBtn.style.marginLeft = 'auto';
     banBtn.textContent = '🚫 Бан';
     banBtn.onclick = async () => {
-      const r = prompt('Причина бана для ' + u.username + ':', 'Мультиаккаунт');
+      const r = await askText('Причина бана для ' + u.username + ':', 'Мультиаккаунт');
       if (!r) return;
       banBtn.disabled = true;
       try { await apiPost('/admin/ban', { username: u.username, reason: r }); toast(u.username + ' забанен', 'success'); loadTwinks(); }
@@ -1379,7 +1751,7 @@ function renderTwinkUserRow(u) {
 async function banTwinkGroup(g, btn) {
   const targets = g.users.filter(u => !u.banned && u.role !== 'admin');
   if (!targets.length) return;
-  if (!confirm('Забанить ' + targets.length + ' аккаунт(ов) в этой группе? Действие можно откатить через «Разбан» в списке пользователей.')) return;
+  if (!await askConfirm('Забанить ' + targets.length + ' аккаунт(ов) в этой группе? Действие можно откатить через «Разбан» в списке пользователей.')) return;
   btn.disabled = true;
   let ok = 0, fail = 0;
   for (const u of targets) {
@@ -1388,6 +1760,121 @@ async function banTwinkGroup(g, btn) {
   }
   toast('Забанено: ' + ok + (fail ? (', ошибок: ' + fail) : ''), fail ? 'error' : 'success');
   loadTwinks();
+}
+
+// ─── ВЕРОЯТНЫЕ ДУБЛИКАТЫ (оценка по сигналам) ───────────────────
+let probTwins = { pairs: [], stats: {} };
+
+async function loadProbTwins() {
+  const box = document.getElementById('twins-prob-list');
+  if (!box) return;
+  box.innerHTML = '<div style="text-align:center;padding:30px"><div class="spinner" style="margin:0 auto"></div></div>';
+  const min = document.getElementById('twins-min').value;
+  try {
+    probTwins = await apiGet('/admin/twins?min=' + encodeURIComponent(min));
+    renderProbTwins();
+  } catch (e) {
+    box.innerHTML = '<p style="color:var(--red)">Ошибка: ' + escapeHtml(e.message) + '</p>';
+  }
+}
+
+function probColor(p) { return p >= 0.85 ? 'var(--red)' : (p >= 0.6 ? '#e0a030' : '#c9b458'); }
+function probWord(p)  { return p >= 0.85 ? 'Очень вероятно' : (p >= 0.6 ? 'Вероятно' : 'Возможно'); }
+
+function renderProbTwins() {
+  const box = document.getElementById('twins-prob-list');
+  if (!box) return;
+  const q = (document.getElementById('twinks-filter').value || '').trim().toLowerCase();
+  const pairs = (probTwins.pairs || []).filter(p => !q || p.a.includes(q) || p.b.includes(q));
+  const st = probTwins.stats || {};
+  document.getElementById('twins-prob-count').textContent = '(' + pairs.length + ')';
+  document.getElementById('twins-prob-stats').textContent = st.accounts
+    ? ('Аккаунтов: ' + st.accounts + ' · с данными об окружении браузера: ' + (st.withHw || 0) + ' · с данными о сети: ' + (st.withNet || 0))
+    : '';
+  if (!pairs.length) {
+    box.innerHTML = '<p style="color:var(--text-muted);padding:12px 0">Подходящих пар не найдено' +
+      ((st.withHw || 0) < 20 ? ' — данных об окружении браузеров пока мало, они накапливаются по мере входов игроков.' : '.') + '</p>';
+    return;
+  }
+  box.innerHTML = '';
+  pairs.forEach(p => box.appendChild(renderProbPair(p)));
+}
+
+function renderProbPair(p) {
+  const card = document.createElement('div');
+  card.style.cssText = 'background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:12px 16px;margin-bottom:10px';
+
+  const head = document.createElement('div');
+  head.style.cssText = 'display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px';
+  const badge = document.createElement('span');
+  const pct = Math.round(p.p * 100);
+  badge.style.cssText = 'font-weight:800;font-size:16px;padding:3px 10px;border-radius:8px;color:#111;background:' + (p.confirmed ? 'var(--accent)' : probColor(p.p));
+  badge.textContent = p.confirmed ? '✔ подтверждено' : (pct + '%');
+  head.appendChild(badge);
+  if (!p.confirmed) {
+    const w = document.createElement('span');
+    w.style.cssText = 'font-size:12.5px;color:var(--text-secondary)';
+    w.textContent = probWord(p.p) + (p.groups && p.groups.length ? ' · независимых групп признаков: ' + p.groups.length + ' (' + p.groups.join(', ') + ')' : ' · только одна группа признаков');
+    head.appendChild(w);
+  }
+  card.appendChild(head);
+
+  const names = document.createElement('div');
+  names.style.cssText = 'display:flex;gap:14px;flex-wrap:wrap;font-size:14px;margin-bottom:8px';
+  [p.userA, p.userB].forEach(u => {
+    const s = document.createElement('span');
+    const a = document.createElement('a');
+    a.href = '/profile/' + u.username; a.target = '_blank'; a.rel = 'noopener';
+    a.style.cssText = 'font-weight:700;color:var(--text-primary);text-decoration:none';
+    a.textContent = u.username;
+    s.appendChild(a);
+    const meta = document.createElement('span');
+    meta.style.cssText = 'color:var(--text-muted);font-size:12px;margin-left:6px';
+    meta.textContent = (u.rating ? '★' + u.rating : '') + (u.createdAt ? ' · рег. ' + new Date(u.createdAt).toLocaleDateString('ru') : '') + (u.banned ? ' · БАН' : '') + (u.role === 'admin' ? ' · ADMIN' : '');
+    s.appendChild(meta);
+    names.appendChild(s);
+  });
+  card.appendChild(names);
+
+  const chips = document.createElement('div');
+  chips.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px';
+  (p.evidence || []).forEach(e => {
+    const c = document.createElement('span');
+    c.style.cssText = 'font-size:11.5px;padding:3px 8px;border-radius:999px;border:1px solid var(--border);color:var(--text-secondary)';
+    c.textContent = e.label + ' · ' + (e.n === 2 ? 'только у этих двух' : 'у ' + e.n + ' акк.');
+    c.title = 'Вес свидетельства: ' + e.w;
+    chips.appendChild(c);
+  });
+  card.appendChild(chips);
+
+  const btns = document.createElement('div');
+  btns.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap';
+  const mk = (text, cls, fn) => { const b = document.createElement('button'); b.className = 'btn ' + cls + ' btn-sm'; b.textContent = text; b.onclick = () => fn(b); btns.appendChild(b); return b; };
+  const label = async (b, lab, okMsg) => {
+    b.disabled = true;
+    try { await apiPost('/admin/twins/label', { a: p.a, b: p.b, label: lab }); toast(okMsg, 'success'); loadProbTwins(); }
+    catch (e) { toast('Ошибка: ' + e.message, 'error'); b.disabled = false; }
+  };
+  mk('👥 Разные люди', 'btn-secondary', b => label(b, 'different', 'Пара скрыта: разные люди'));
+  if (p.confirmed) mk('↩ Снять отметку', 'btn-ghost', b => label(b, 'clear', 'Отметка снята'));
+  else mk('✅ Один человек', 'btn-ghost', b => label(b, 'same', 'Отмечено: один человек'));
+
+  const targets = [p.userA, p.userB].filter(u => !u.banned && u.role !== 'admin');
+  if (targets.length) {
+    mk('🚫 Забанить ' + (targets.length > 1 ? 'обоих' : targets[0].username), 'btn-danger', async b => {
+      const r = await askText('Причина бана (' + targets.map(u => u.username).join(', ') + '):', 'Мультиаккаунт');
+      if (!r) return;
+      b.disabled = true;
+      let ok = 0, fail = 0;
+      for (const u of targets) {
+        try { await apiPost('/admin/ban', { username: u.username, reason: r }); ok++; } catch { fail++; }
+      }
+      toast('Забанено: ' + ok + (fail ? (', ошибок: ' + fail) : ''), fail ? 'error' : 'success');
+      loadProbTwins();
+    });
+  }
+  card.appendChild(btns);
+  return card;
 }
 
 // ─── ЛОГ ДЕЙСТВИЙ АДМИНИСТРАТОРОВ ──────────────────────────────

@@ -1,11 +1,13 @@
 <!DOCTYPE html>
 <html lang="ru">
 <head>
+  <script src="/js/utils.js"></script>
+  <script src="/js/toast.js"></script>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Пожаловаться на игрока — Chess Home</title>
+  <title data-i18n="report.page_title">Пожаловаться на игрока — Chess Home</title>
   <link rel="stylesheet" href="/css/main.css">
-  <link rel="icon" type="image/png" href="../img/logo/favicon.png">
+  <link rel="icon" type="image/png" href="/img/logo/favicon.png">
   <style>
     body {
       background: var(--bg-primary, #0f0f14);
@@ -108,14 +110,17 @@
 <body>
 
     <div id="ch-header-root"></div>
-  <script src="js/header.js"></script>
+  <script src="/js/header.js"></script>
   <script>
     // Инициализация при загрузке.
-    // Раньше здесь только вызывался CH.initHeader(), а данные о пользователе
-    // хедер должен был получить сам — но авторизация теперь идёт через
-    // HttpOnly-cookie, и хедеру нужно явно передать текущего пользователя,
-    // иначе он остаётся в состоянии "гость" (кнопки Вход/Регистрация),
-    // даже если сессия по факту валидна (как и было видно на этой странице).
+    const T = (key) => (window.CH_I18N ? CH_I18N.t(key) : key);
+    function i18nReady() {
+      return new Promise(resolve => {
+        const check = () => (window.CH_I18N ? CH_I18N.onReady(resolve) : setTimeout(check, 50));
+        check();
+      });
+    }
+
     document.addEventListener('DOMContentLoaded', async () => {
       CH.initHeader({ activePage: 'report' });
       try {
@@ -125,57 +130,56 @@
         CH.setCurrentUser(me);
       } catch {
         CH.setCurrentUser(null);
-        alert('Вам нужно войти в аккаунт, чтобы отправить жалобу.');
-        window.location.href = '/';
+        await i18nReady();
+        toast(T('report.login_required'), 'error');
+        setTimeout(() => { window.location.href = '/'; }, 1500);
       }
     });
   </script>
 
   <div class="report-container" id="report-form-container">
     <div class="report-header">
-      <h1>⚠️ Пожаловаться на игрока</h1>
-      <p>Мы серьезно относимся к нарушениям. Пожалуйста, заполните форму ниже.</p>
+      <h1 data-i18n="report.title">⚠️ Пожаловаться на игрока</h1>
+      <p data-i18n="report.subtitle">Мы серьезно относимся к нарушениям. Пожалуйста, заполните форму ниже.</p>
     </div>
 
-    <div class="info-box">
-      <strong>Важно / Important:</strong><br>
-      Пожалуйста, опишите ситуацию максимально подробно. Пишите на <strong>русском</strong> или <strong>английском</strong> языке.<br>
-      <em>Please describe the situation in detail. Write in <strong>English</strong> or <strong>Russian</strong>.</em>
+    <div class="info-box" data-i18n="report.info_html" data-i18n-html>
+      <strong>Важно:</strong><br>Пожалуйста, опишите ситуацию максимально подробно. Пишите на <strong>русском</strong> или <strong>английском</strong> языке.
     </div>
 
     <form id="report-form" onsubmit="submitReport(event)">
       <div class="form-group">
-        <label class="form-label">Ник нарушителя</label>
-        <input type="text" id="targetUsername" class="form-input" placeholder="Например: cheater123" required>
+        <label class="form-label" data-i18n="report.target_label">Ник нарушителя</label>
+        <input type="text" id="targetUsername" class="form-input" data-i18n-placeholder="report.target_placeholder" placeholder="Например: cheater123" required>
       </div>
 
       <div class="form-group">
-        <label class="form-label">Причина</label>
+        <label class="form-label" data-i18n="report.reason_label">Причина</label>
         <select id="reportReason" class="form-select" required>
-          <option value="" disabled selected>Выберите причину...</option>
-          <option value="cheating">Читерство / Использование движка (Cheating)</option>
-          <option value="abuse">Оскорбления в чате (Abuse/Toxicity)</option>
-          <option value="spam">Спам / Реклама (Spam)</option>
-          <option value="stalling">Затягивание времени (Stalling)</option>
-          <option value="other">Другое (Other)</option>
+          <option value="" disabled selected data-i18n="report.reason_placeholder">Выберите причину...</option>
+          <option value="cheating" data-i18n="report.reason_cheating">Читерство / Использование движка</option>
+          <option value="abuse" data-i18n="report.reason_abuse">Оскорбления в чате</option>
+          <option value="spam" data-i18n="report.reason_spam">Спам / Реклама</option>
+          <option value="stalling" data-i18n="report.reason_stalling">Затягивание времени</option>
+          <option value="other" data-i18n="report.reason_other">Другое</option>
         </select>
       </div>
 
       <div class="form-group">
-        <label class="form-label">Подробности (Details)</label>
-        <textarea id="reportDetails" class="form-textarea" placeholder="Укажите ссылку на партию или опишите, что произошло..." required maxlength="500"></textarea>
+        <label class="form-label" data-i18n="report.details_label">Подробности</label>
+        <textarea id="reportDetails" class="form-textarea" data-i18n-placeholder="report.details_placeholder" placeholder="Укажите ссылку на партию или опишите, что произошло..." required maxlength="500"></textarea>
         <div style="text-align:right; font-size:11px; color:#888; margin-top:4px;"><span id="char-count">0</span>/500</div>
       </div>
 
-      <button type="submit" class="btn-submit" id="submit-btn">Отправить жалобу</button>
+      <button type="submit" class="btn-submit" id="submit-btn" data-i18n="report.submit">Отправить жалобу</button>
     </form>
   </div>
 
   <div class="report-container" id="success-msg">
     <div style="font-size: 48px; margin-bottom: 16px;">✅</div>
-    <h2 style="margin:0 0 12px 0;">Жалоба отправлена</h2>
-    <p style="color: #a0a0b0; line-height:1.5;">Спасибо за помощь в поддержании порядка на Chess Home. Администраторы рассмотрят ваш репорт в ближайшее время.</p>
-    <button class="btn-submit" style="background:var(--accent); color:#000; margin-top:20px;" onclick="window.location.href='/'">Вернуться на главную</button>
+    <h2 style="margin:0 0 12px 0;" data-i18n="report.success_title">Жалоба отправлена</h2>
+    <p style="color: #a0a0b0; line-height:1.5;" data-i18n="report.success_text">Спасибо за помощь в поддержании порядка на Chess Home. Администраторы рассмотрят ваш репорт в ближайшее время.</p>
+    <button class="btn-submit" style="background:var(--accent); color:#000; margin-top:20px;" onclick="window.location.href='/'" data-i18n="report.back_home">Вернуться на главную</button>
   </div>
 
   <script>
@@ -195,7 +199,7 @@
       e.preventDefault();
       const btn = document.getElementById('submit-btn');
       btn.disabled = true;
-      btn.innerText = 'Отправка...';
+      btn.innerText = T('report.sending');
 
       const targetUsername = document.getElementById('targetUsername').value.trim();
       const reason = document.getElementById('reportReason').value;
@@ -209,20 +213,21 @@
           body: JSON.stringify({ targetUsername, reason, details })
         });
 
-        const data = await res.json();
+        const data = await safeJson(res);
         
         if (data.error) {
-          alert('Ошибка: ' + data.error);
+          toast(T('report.error_prefix') + ' ' + data.error, 'error');
           btn.disabled = false;
-          btn.innerText = 'Отправить жалобу';
+          btn.innerText = T('report.submit');
         } else {
+          toast(T('report.success_title'), 'success');
           document.getElementById('report-form-container').style.display = 'none';
           document.getElementById('success-msg').style.display = 'block';
         }
       } catch (err) {
-        alert('Произошла ошибка при отправке.');
+        toast(T('report.send_failed'), 'error');
         btn.disabled = false;
-        btn.innerText = 'Отправить жалобу';
+        btn.innerText = T('report.submit');
       }
     }
   </script>

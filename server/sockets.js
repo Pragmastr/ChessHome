@@ -1,133 +1,26 @@
 // ═══════════════════════════════════════════════════════════════
 //  sockets.js — вся логика Socket.IO (реалтайм: игра, чат, турниры)
 // ═══════════════════════════════════════════════════════════════
-// Один большой io.on('connection', socket => { ... }) — как и раньше,
-// просто вынесен из index.js. Всё общее состояние и хелперы берём
-// из core.js (та же самая память, не копии).
-// ═══════════════════════════════════════════════════════════════
 
 const {
-  express,
-  http,
-  Server,
-  compression,
-  bcrypt,
-  jwt,
   uuidv4,
-  path,
-  fs,
-  cors,
-  Pool,
-  multer,
-  pool,
-  db,
-  withTransaction,
-  Resend,
-  pendingPasswordChanges,
-  pendingDeletions,
-  pendingLogins,
-  TWO_FA_RESEND_COOLDOWN_MS,
-  twoFactorLastSent,
-  sendPasswordChangeEmail,
-  sendTwoFactorLoginEmail,
-  sendDeleteAccountEmail,
-  BAD_NICK_WORDS,
-  normNick,
-  nickHasBadWord,
-  normForSimilarity,
-  app,
   parseCookieHeader,
-  isProd,
-  AUTH_COOKIE_OPTS,
-  DEVICE_COOKIE_OPTS,
-  getAuthToken,
-  RateLimiter,
-  limiterGeneral,
-  limiterAuth,
-  limiterStrict,
   socketLimiter,
-  limiterRegStrict,
-  STORM_DURATION_MS,
-  STORM_MAX_TIME_MS,
-  STORM_MIN_MS_PER_PUZZLE,
-  stormRuns,
   bannedIPs,
   bannedDevices,
-  loadBansFromDB,
   saveBanToDB,
-  removeBanFromDB,
   usersCache,
-  cacheUser,
-  rowToUser,
   isVip,
-  isVipGranter,
   getUser,
   saveUser,
   globalChat,
-  loadChat,
   saveChatMsg,
-  deleteChatMsg,
   tournaments,
-  loadTournaments,
   saveTournament,
-  deleteTournamentFromDB,
   clubs,
-  loadClubs,
-  saveClub,
-  deleteClubFromDB,
-  CLUB_CHAT_MAX,
-  clubChats,
-  clubChatBans,
-  getClubChat,
-  getClubChatBans,
-  initClubChatTable,
-  loadClubChats,
-  saveClubChatMsg,
-  deleteClubChatMsgsByUser,
-  isSiteAdmin,
   isClubModerator,
-  canManageTournament,
-  MAX_INTERCLUB_TEAMS,
-  extractClubIdFromLink,
-  resolveInterclubTeams,
-  requireTournamentManager,
   canWriteInClubChat,
-  TOURNAMENT_CHAT_MAX,
-  TOURNAMENT_CHAT_READONLY_AFTER_MS,
-  tournamentChats,
-  tournamentChatMutes,
-  getTournamentChat,
-  getTournamentChatMutes,
-  isTournamentChatOpen,
-  canModerateTournamentChat,
-  initTournamentChatTable,
-  loadTournamentChats,
-  saveTournamentChatMsg,
-  wipeTournamentChatMsgsByUser,
-  forumThreads,
-  forumReplies,
-  loadForum,
-  saveForumThread,
-  deleteForumThread,
-  saveForumReply,
-  deleteForumReply,
-  blogPosts,
-  loadBlog,
-  saveBlogPost,
-  deleteBlogPost,
-  newsPosts,
-  loadNews,
-  saveNewsPost,
-  deleteNewsPost,
-  newsAuthors,
-  loadNewsAuthors,
-  server,
   io,
-  PORT,
-  JWT_SECRET,
-  RESERVED,
-  SYSTEM_SENDER,
-  isSystemSender,
   sessions,
   usernameToSocketId,
   onlineUsers,
@@ -137,113 +30,76 @@ const {
   workers,
   analyzeJobs,
   pickIdleWorker,
-  ipBanMiddleware,
-  getIP,
-  isLocalIP,
-  vpnCheckCache,
-  VPN_CACHE_TTL,
-  isVpnOrProxy,
-  rateLimit,
-  BUILD_VERSION,
-  JS_SRC_RE,
-  sendVersionedHtml,
-  LICHESS_TOKEN,
-  YUKASSA_SHOP_ID,
-  YUKASSA_SECRET_KEY,
-  SITE_URL,
-  initDonateTable,
-  loginFailStreaks,
-  getLoginFailStreak,
-  bumpLoginFailStreak,
-  clearLoginFailStreak,
-  limiterQuests,
-  handleDeleteChatMsg,
   removeUserChatMessages,
-  handleUpdateReportStatus,
-  APPEAL_REASONS,
-  handleUpdateAppealStatus,
-  handleEditTournament,
-  handleDeleteTournament,
-  handleUnblacklistTournament,
-  dmRoomKey,
-  logDmAudit,
-  logAdminAction,
-  countTodayByUser,
-  makeSlug,
-  forumViewSessions,
-  handleUnfollow,
-  blogAuthMiddleware,
-  blogAdminMiddleware,
-  isBlogAdmin,
-  decodeBlogField,
-  blogSanitize,
-  handleDeleteBlogPost,
-  isBlogCommentAdmin,
-  getCommentBan,
-  handleDeleteBlogComment,
-  newsAuthMiddleware,
-  NEWS_OWNER_USERNAME,
-  isNewsOwner,
-  isNewsAuthorUser,
-  newsSanitize,
-  handleDeleteNewsPost,
-  getNewsCommentMute,
-  handleDeleteNewsComment,
-  UPLOADS_DIR,
-  uploadStorage,
-  uploadImage,
-  handleEditClub,
-  handleDeleteClub,
-  initPuzzleTables,
-  initDurkaTables,
-  durkaKeyMiddleware,
-  parsePuzzleSolution,
-  handleDeletePuzzle,
-  SPA_ROUTES,
-  handleDeleteDevDiaryEntry,
-  handleDeleteDevDiaryComment,
-  authMiddleware,
-  requireAdmin,
-  requireVipGranter,
-  sanitizeUser,
-  adminSanitizeUser,
-  getInterclubTeamsInfo,
-  computeTeamStandings,
+  safeSecretEqual,
+  isTrustedProxyPeer,
+  cleanIpHeader,
   sanitizeTournament,
   getTournamentStatus,
   verifyToken,
-  liveClock,
-  hasFullMove,
+  // hasFullMove/recordGame/updateStats/finishTournamentGame здесь больше не
+  // нужны (P1): resign/accept_draw переведены на endGameAuthoritative и
+  // сами партию не завершают.
   endGameAuthoritative,
   findSocketByUsername,
   emitToAdmins,
-  recordGame,
-  updateStats,
-  REMATCH_GRACE_PERIOD,
   tryPairTournamentPlayers,
   FIRST_MOVE_TIMEOUT,
-  startTournamentGame,
-  finishTournamentGame,
-  ANTICHEAT_THRESHOLD,
-  ANTICHEAT_STREAK_BAN,
-  checkAnticheat,
-  anticheatBan,
   startGame,
   serverChess,
   limiterSocketConnect,
-  main,
 } = require('./core');
+const twins = require('./twins');
+const moderation = require('./moderation');
 
+// ── Жизненный цикл вызовов (challenges) ────────────────────────
+const CHALLENGE_TTL_MS = 60000;
+setInterval(() => {
+  const now = Date.now();
+  for (let i = pendingChallenges.length - 1; i >= 0; i--) {
+    if (now - pendingChallenges[i].createdAt > CHALLENGE_TTL_MS) pendingChallenges.splice(i, 1);
+  }
+}, 30000).unref();
 
+const workerAuthFails = new Map(); // ip -> { count, resetAt }
+const WORKER_AUTH_MAX_FAILS = 5;
+const WORKER_AUTH_WINDOW_MS = 10 * 60 * 1000;
+function isWorkerAuthBlocked(ip) {
+  const d = workerAuthFails.get(ip);
+  if (!d) return false;
+  if (Date.now() > d.resetAt) { workerAuthFails.delete(ip); return false; }
+  return d.count >= WORKER_AUTH_MAX_FAILS;
+}
+function registerWorkerAuthFail(ip) {
+  const now = Date.now();
+  let d = workerAuthFails.get(ip);
+  if (!d || now > d.resetAt) {
+    if (workerAuthFails.size > 10000) workerAuthFails.clear(); // защита памяти
+    d = { count: 0, resetAt: now + WORKER_AUTH_WINDOW_MS };
+    workerAuthFails.set(ip, d);
+  }
+  d.count++;
+}
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, d] of workerAuthFails) if (now > d.resetAt) workerAuthFails.delete(ip);
+}, 60 * 1000).unref();
+// Строка от воркера — только вывод UCI-движка («info …» / «bestmove …»): ASCII,
+// без угловых скобок и кавычек, не длиннее 1000 символов.
+function sanitizeUciLine(line) {
+  if (typeof line !== 'string' || line.length > 1000) return null;
+  return /^(info|bestmove)[A-Za-z0-9 .\-_:=+\/()]*$/.test(line) ? line : null;
+}
+if (process.env.WORKER_SECRET && process.env.WORKER_SECRET.length < 24) {
+  console.warn('⚠️  WORKER_SECRET короче 24 символов — задайте длинный случайный секрет: node -e "console.log(require(\'crypto\').randomBytes(24).toString(\'hex\'))"');
+}
 
 io.on('connection', (socket) => {
   // Socket.io не использует req.ip — читаем заголовок напрямую из handshake.
-  // x-forwarded-for может содержать несколько IP через запятую: "реальный, cloudflare, nginx..."
-  // Берём крайний левый — это и есть реальный IP клиента.
+  const peerAddr = socket.handshake.address;
   const socketIP = (
-    socket.handshake.headers['x-forwarded-for']?.split(',')[0]?.trim()
-    || socket.handshake.headers['x-real-ip']
-    || socket.handshake.address
+    (isTrustedProxyPeer(peerAddr) ? cleanIpHeader(socket.handshake.headers['x-real-ip']) : null)
+    || peerAddr
     || 'unknown'
   );
 
@@ -258,8 +114,14 @@ io.on('connection', (socket) => {
   // Если задан WORKER_SECRET в .env — принимаем воркер-подключения.
   // Если не задан вообще — фича просто выключена, ничего не ломается.
   socket.on('worker_auth', (payload) => {
+    if (isWorkerAuthBlocked(socketIP)) {
+      socket.emit('worker_auth_error', 'Слишком много попыток, подождите');
+      socket.disconnect(true);
+      return;
+    }
     const secret = typeof payload === 'string' ? payload : payload?.secret;
-    if (!process.env.WORKER_SECRET || secret !== process.env.WORKER_SECRET) {
+    if (!process.env.WORKER_SECRET || typeof secret !== 'string' || !safeSecretEqual(secret, process.env.WORKER_SECRET)) {
+      registerWorkerAuthFail(socketIP);
       socket.emit('worker_auth_error', 'Неверный секрет');
       socket.disconnect(true);
       return;
@@ -280,20 +142,26 @@ io.on('connection', (socket) => {
   // Формат строки — родной UCI-вывод Stockfish, парсер на клиенте
   // (stockfish-ui.js) уже умеет такие строки читать — не важно,
   // пришли они от локального движка в браузере или от воркера.
-  socket.on('worker_job_progress', ({ jobId, line }) => {
-    const job = analyzeJobs.get(jobId);
-    if (!job) return;
+  // Принимаем только от аутентифицированного воркера, которому задача выдана,
+  socket.on('worker_job_progress', (msg) => {
+    if (!socket.isWorker || !msg || typeof msg !== 'object') return;
+    const job = analyzeJobs.get(msg.jobId);
+    if (!job || job.workerSocketId !== socket.id) return;
+    const line = sanitizeUciLine(msg.line);
+    if (!line) return;
     const requester = io.sockets.sockets.get(job.requesterSocketId);
     if (requester) requester.emit('analyze_line', line);
   });
-  socket.on('worker_job_done', ({ jobId, line }) => {
-    const job = analyzeJobs.get(jobId);
-    if (!job) return;
+  socket.on('worker_job_done', (msg) => {
+    if (!socket.isWorker || !msg || typeof msg !== 'object') return;
+    const job = analyzeJobs.get(msg.jobId);
+    if (!job || job.workerSocketId !== socket.id) return;
+    const line = sanitizeUciLine(msg.line);
     const requester = io.sockets.sockets.get(job.requesterSocketId);
-    if (requester) requester.emit('analyze_line', line);
+    if (requester && line) requester.emit('analyze_line', line);
     const w = workers.get(job.workerSocketId);
     if (w) w.busy = false;
-    analyzeJobs.delete(jobId);
+    analyzeJobs.delete(msg.jobId);
   });
 
   // ── Запрос анализа от обычного посетителя (страница «Анализ») ──
@@ -333,12 +201,21 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Обёртка над socket.on: rate-limit + изоляция ошибок.
   const origOn = socket.on.bind(socket);
   socket.on = function(event, handler) {
     if (event === 'connect' || event === 'disconnect' || event === 'error') return origOn(event, handler);
     return origOn(event, (...args) => {
       if (!socketLimiter.check(socket.id + '_' + event).allowed) { socket.emit('error', 'Слишком много запросов. Притормози!'); return; }
-      handler(...args);
+      try {
+        const r = handler(...args);
+        if (r && typeof r.catch === 'function') {
+          r.catch(e => { console.error(`[SocketHandler] ${event}:`, e); socket.emit('error', 'Внутренняя ошибка сервера'); });
+        }
+      } catch (e) {
+        console.error(`[SocketHandler] ${event}:`, e);
+        socket.emit('error', 'Внутренняя ошибка сервера');
+      }
     });
   };
 
@@ -352,38 +229,15 @@ io.on('connection', (socket) => {
     if (!p) return socket.emit('auth_error', 'Неверный токен');
     if (bannedIPs.has(socketIP)) { socket.emit('auth_error', 'Ваш IP заблокирован'); socket.disconnect(); return; }
 
-    // БАГ (исправлено): раньше между verifyToken() и этим блоком стоял
-    // "await getUser(...)" — а он обращается к кэшу/БД, то есть реально
-    // отдаёт управление event loop'у. Если у юзера открыто несколько
-    // вкладок (у каждой — свой socket от app.js И свой отдельный socket
-    // от header.js для DM) и он быстро перезагружает страницу, несколько
-    // auth-событий одного и того же юзера начинают выполняться
-    // параллельно, и их await'ы могли завершиться в ЛЮБОМ порядке. Из-за
-    // этого сокет, который должен был быть найден как "старый" и вытолкнут
-    // (oldSocket.disconnect), иногда проскакивал мимо этой проверки —
-    // потому что на момент его собственного запроса prevOldId ещё
-    // указывал на кого-то другого, кто сам уже был снят с учёта. Такой
-    // "потерянный" сокет оставался реально подключённым (просто не как
-    // текущая сессия юзера) до тех пор, пока не отваливался сам по
-    // ping-таймауту socket.io (~20-30 сек) — отсюда и временный, сам
-    // проходящий разнобой в счётчике онлайна.
-    // Фикс: всю регистрацию сессии (поиск+вытеснение старого сокета,
-    // запись в sessions/usernameToSocketId/onlineUsers) делаем СРАЗУ,
-    // одним синхронным куском без await между чтением токена и записью —
-    // гонки конкурирующих auth-вызовов для одного юзера больше нет.
-    // Проверку бана делаем уже ПОСЛЕ регистрации: если юзер забанен —
-    // просто отключаем этот (уже корректно зарегистрированный) сокет,
-    // и штатный disconnect-обработчик сам всё почистит.
-    const prevOldId = usernameToSocketId.get(p.username.toLowerCase());
-    if (prevOldId && prevOldId !== socket.id) {
-      const oldSocket = io.sockets.sockets.get(prevOldId);
-      if (oldSocket) oldSocket.disconnect(true);
-      sessions.delete(prevOldId);
-    }
+    const lower = p.username.toLowerCase();
+    let ids = usernameToSocketId.get(lower);
+    const isFirstSocket = !ids || ids.size === 0;
+    if (!ids) { ids = new Set(); usernameToSocketId.set(lower, ids); }
+    ids.add(socket.id);
     sessions.set(socket.id, { username: p.username });
-    usernameToSocketId.set(p.username.toLowerCase(), socket.id);
-    onlineUsers.add(p.username);
+    if (isFirstSocket) onlineUsers.add(p.username);
     socket.username = p.username;
+    twins.recordLogin(p.username, socketIP, handshakeCookies.ch_device_id);
 
     const user = await getUser(p.username.toLowerCase());
     if (user?.banned) { socket.emit('auth_error', 'Аккаунт заблокирован: ' + (user.banReason || 'нарушение правил')); socket.disconnect(); return; }
@@ -434,6 +288,11 @@ io.on('connection', (socket) => {
     const p = t.participants.find(p => p.username === socket.username);
     if (!p) return socket.emit('error', 'Вы не участвуете');
     if (p.currentGameId) return;
+    if (p.waiting && !p.paused) return;
+    // 2) Троттлинг: не чаще раза в секунду на сокет.
+    const nowTs = Date.now();
+    if (socket._lastSeekAt && nowTs - socket._lastSeekAt < 1000) return;
+    socket._lastSeekAt = nowTs;
     p.waiting = true;
     p.paused = false;
     p.nextEligibleAt = 0; // явный клик "Играть" — грейс-период не нужен
@@ -476,6 +335,10 @@ io.on('connection', (socket) => {
     const p = t.participants.find(p => p.username === socket.username);
     if (!p || p.left || p.anticheatBanned || p.currentGameId) return;
     if (getTournamentStatus(t, Date.now()) !== 'active') return;
+    if (p.waiting && !p.paused) return;
+    const nowTs = Date.now();
+    if (socket._lastSeekAt && nowTs - socket._lastSeekAt < 1000) return;
+    socket._lastSeekAt = nowTs;
     p.waiting = true;
     p.paused = false;
     p.nextEligibleAt = 0; // явный клик "Играть" — грейс-период не нужен
@@ -489,27 +352,49 @@ io.on('connection', (socket) => {
   socket.on('tournament_berserk', ({ gameId }) => {
     if (!socket.username) return;
     const game = tournamentGames.get(gameId); if (!game) return;
+    // Безопасность: берсерк может включить ТОЛЬКО участник партии и только
+    if (game.white !== socket.username && game.black !== socket.username) return;
     const color = game.white === socket.username ? 'white' : 'black';
     if (game.berserk[color] || game.moveCounts[color] > 0) return;
     game.berserk[color] = true;
-    const payload = { gameId, color, berserk: game.berserk };
+    if (color === 'white') {
+      game.whiteTime = Math.floor((game.whiteTime || 0) / 2);
+    } else {
+      game.blackTime = Math.floor((game.blackTime || 0) / 2);
+    }
+    game.tcIncrement = 0;
+    game.lastMoveAt = game.lastMoveAt || Date.now();
+    const payload = { gameId, color, berserk: game.berserk, whiteTime: game.whiteTime, blackTime: game.blackTime };
     [findSocketByUsername(game.white), findSocketByUsername(game.black)].forEach(s => s?.emit('berserk_activated', payload));
   });
 
+  // Формат контрольного времени «10+0», «3+2», «60+0s» (для пулов) —
+  const TIME_CONTROL_RE = /^\d{1,3}(\.\d)?s?\+\d{1,2}s?$/;
+
   socket.on('post_challenge', (data) => {
     if (!socket.username) return;
-    const challenge = { id: uuidv4(), from: socket.username, timeControl: data.timeControl || '10+0', color: data.color || 'random', rated: data.rated !== false, createdAt: Date.now(), socketId: socket.id };
+    if (typeof data !== 'object' || data === null) return;
+    const nowTs = Date.now();
+    if (socket._lastPostChallengeAt && nowTs - socket._lastPostChallengeAt < 1000) {
+      return socket.emit('error', 'Слишком часто — подождите секунду');
+    }
+    socket._lastPostChallengeAt = nowTs;
+    const timeControl = typeof data.timeControl === 'string' && TIME_CONTROL_RE.test(data.timeControl) ? data.timeControl : '10+0';
+    const color = ['white', 'black', 'random'].includes(data.color) ? data.color : 'random';
+    const rated = data.rated !== false;
+    const challenge = { id: uuidv4(), from: socket.username, timeControl, color, rated, createdAt: Date.now(), socketId: socket.id };
     const idx = pendingChallenges.findIndex(c => c.from === socket.username);
     if (idx !== -1) pendingChallenges.splice(idx, 1);
     pendingChallenges.push(challenge);
-    io.emit('challenges_update', pendingChallenges.filter(c => Date.now() - c.createdAt < 60000));
+    io.emit('challenges_update', pendingChallenges.filter(c => Date.now() - c.createdAt < CHALLENGE_TTL_MS));
   });
 
   socket.on('cancel_challenge', () => {
     if (!socket.username) return;
     const idx = pendingChallenges.findIndex(c => c.from === socket.username);
-    if (idx !== -1) pendingChallenges.splice(idx, 1);
-    io.emit('challenges_update', pendingChallenges.filter(c => Date.now() - c.createdAt < 60000));
+    if (idx === -1) return;
+    pendingChallenges.splice(idx, 1);
+    io.emit('challenges_update', pendingChallenges.filter(c => Date.now() - c.createdAt < CHALLENGE_TTL_MS));
   });
 
   socket.on('accept_challenge', (challengeId) => {
@@ -518,21 +403,36 @@ io.on('connection', (socket) => {
     if (idx === -1) return socket.emit('error', 'Вызов не найден');
     const challenge = pendingChallenges[idx];
     if (challenge.from === socket.username) return socket.emit('error', 'Нельзя принять свой вызов');
+    if (Date.now() - challenge.createdAt > CHALLENGE_TTL_MS) {
+      pendingChallenges.splice(idx, 1);
+      io.emit('challenges_update', pendingChallenges);
+      return socket.emit('error', 'Вызов устарел');
+    }
     pendingChallenges.splice(idx, 1);
-    io.emit('challenges_update', pendingChallenges.filter(c => Date.now() - c.createdAt < 60000));
+    io.emit('challenges_update', pendingChallenges.filter(c => Date.now() - c.createdAt < CHALLENGE_TTL_MS));
     setTimeout(() => startGame(socket, challenge), 50);
   });
 
   socket.on('challenge_user', (data) => {
     if (!socket.username) return;
+    const now = Date.now();
+    if (socket._lastDirectChallengeAt && now - socket._lastDirectChallengeAt < 2000) {
+      return socket.emit('error', 'Не так часто — подождите пару секунд');
+    }
+    socket._lastDirectChallengeAt = now;
     // Поддерживаем и старый формат вызова (просто ник строкой), и новый
     // объект { username, rated } — чтобы можно было выбрать товарищескую партию.
     const targetUsername = typeof data === 'string' ? data : data?.username;
     const rated = typeof data === 'string' ? true : data?.rated !== false;
-    if (!targetUsername) return;
+    if (typeof targetUsername !== 'string' || !targetUsername || targetUsername.length > 20) return;
+    if (targetUsername.toLowerCase() === socket.username.toLowerCase()) return socket.emit('error', 'Нельзя вызвать самого себя');
     const t = findSocketByUsername(targetUsername);
     if (!t) return socket.emit('error', 'Не в сети');
-    t.emit('incoming_challenge', { from: socket.username, socketId: socket.id, rated });
+    // Контроль времени личного вызова: берём выбранный в зале, иначе 10+0.
+    const directTC = typeof data === 'object' && data && typeof data.timeControl === 'string' && TIME_CONTROL_RE.test(data.timeControl) ? data.timeControl : '10+0';
+    socket._directTC = directTC;
+    socket._directRated = rated;
+    t.emit('incoming_challenge', { from: socket.username, socketId: socket.id, rated, timeControl: directTC });
   });
 
   socket.on('accept_direct_challenge', (data) => {
@@ -541,10 +441,15 @@ io.on('connection', (socket) => {
     const rated = typeof data === 'string' ? true : data?.rated !== false;
     const fromSocket = io.sockets.sockets.get(fromSocketId);
     if (!fromSocket) return socket.emit('error', 'Игрок отключился');
-    startGame(socket, { from: fromSocket.username, timeControl: '10+0', color: 'random', rated, socketId: fromSocketId });
+    // Берём контроль, который вызывающий сам указал (хранится на сервере, клиенту не доверяем).
+    const directTC = typeof fromSocket._directTC === 'string' && TIME_CONTROL_RE.test(fromSocket._directTC) ? fromSocket._directTC : '10+0';
+    const effectiveRated = typeof fromSocket._directRated === 'boolean' ? fromSocket._directRated : rated;
+    startGame(socket, { from: fromSocket.username, timeControl: directTC, color: 'random', rated: effectiveRated, socketId: fromSocketId });
   });
 
   socket.on('decline_challenge', (fromSocketId) => {
+    if (!socket.username) return;
+    if (typeof fromSocketId !== 'string' || fromSocketId.length > 64) return;
     const fs = io.sockets.sockets.get(fromSocketId);
     if (fs) fs.emit('challenge_declined', socket.username);
   });
@@ -558,22 +463,20 @@ io.on('connection', (socket) => {
   });
 
   socket.on('make_move', ({ gameId, move }) => {
+    if (!socket.username) return;
     const game = activeGames.get(gameId);
     if (!game) { socket.emit('error', 'Партия не найдена (возможно, уже завершилась)'); return; }
-    if (typeof move !== 'object' || typeof move.from !== 'number' || typeof move.to !== 'number') return;
-    if (move.from < 0 || move.from > 63 || move.to < 0 || move.to > 63) return;
+    if (typeof move !== 'object' || move === null || typeof move.from !== 'number' || typeof move.to !== 'number'
+        || move.from < 0 || move.from > 63 || move.to < 0 || move.to > 63) {
+      socket.emit('move_rejected', { gameId, reason: 'invalid' });
+      return;
+    }
+    if (move.promotion != null && !['q', 'r', 'b', 'n'].includes(move.promotion)) {
+      socket.emit('move_rejected', { gameId, reason: 'invalid' });
+      return;
+    }
     if (game.white !== socket.username && game.black !== socket.username) return;
     const pc = game.white === socket.username ? 'white' : 'black';
-    // БАГ (исправлено): раньше здесь был просто "return" без единого
-    // уведомления клиенту. Но клиент к этому моменту уже применил ход
-    // ЛОКАЛЬНО, оптимистично, ещё до ответа сервера (см. board.js:
-    // executeMove) — значит игрок видел, что сходил, а сервер это молча
-    // отбрасывал. Причина рассинхронизации turn — обычно короткий обрыв
-    // связи, из-за которого предыдущий ход/подтверждение потерялись.
-    // Теперь в такой ситуации шлём 'move_rejected' с полной актуальной
-    // историей ходов и временем — клиент по этому событию откатывает
-    // локальную доску и пересобирает её по реальному состоянию партии
-    // (см. app.js: socket.on('move_rejected', ...) и board.js:resyncFromServer).
     if (game.turn !== pc) {
       socket.emit('move_rejected', {
         gameId, reason: 'not-your-turn',
@@ -638,21 +541,21 @@ io.on('connection', (socket) => {
   });
 
   socket.on('game_over', async ({ gameId, result, reason, accuracy }) => {
+    if (!socket.username) return;
     const game = activeGames.get(gameId); if (!game) return;
     // Игрок должен быть участником этой партии, чтобы вообще заявлять об её завершении
     if (socket.username !== game.white && socket.username !== game.black) return;
 
-    const norm = result === 'w' ? 'white' : result === 'b' ? 'black' : result;
-    if (norm !== 'white' && norm !== 'black' && norm !== 'draw') return;
-
-    // ── Таймаут больше не принимается от клиента — это решает только
-    // серверный интервал (endGameAuthoritative выше), который знает
-    // реальное оставшееся время по game.lastMoveAt. Клиентские часы
-    // (clockInterval и т.п.) не могут завершить партию по флагу.
     if (reason === 'timeout' || reason === 'flag') {
       socket.emit('error', 'Таймаут определяется сервером');
       return;
     }
+
+    const ALLOWED_REASONS = ['checkmate', 'stalemate', 'threefold-repetition', 'fifty-move', 'insufficient-material'];
+    if (!ALLOWED_REASONS.includes(reason)) { socket.emit('error', 'Недопустимая причина завершения'); return; }
+
+    const norm = result === 'w' ? 'white' : result === 'b' ? 'black' : result;
+    if (norm !== 'white' && norm !== 'black' && norm !== 'draw') return;
 
     // ── Мат/пат — проверяем по реальной позиции на сервере, а не
     // просто принимаем то, что прислал клиент.
@@ -671,9 +574,7 @@ io.on('connection', (socket) => {
 
     // ── Ничьи по правилам (50 ходов / недостаток материала / троекратное
     // повторение позиции) — тоже перепроверяем по истории ходов, а не
-    // просто верим клиенту. Раньше клиент такие заявки вообще не слал
-    // (см. исправление в board.js), из-за чего партия никогда не
-    // завершалась сама — время шло, а ходить было некуда.
+    // просто верим клиенту.
     if (reason === 'threefold-repetition' || reason === 'fifty-move' || reason === 'insufficient-material') {
       if (norm !== 'draw') { socket.emit('error', 'Некорректный результат ничьей'); return; }
       if (reason === 'threefold-repetition' && !serverChess.isThreefoldRepetition(game.moves)) {
@@ -690,45 +591,62 @@ io.on('connection', (socket) => {
       }
     }
 
-    // Удаляем сразу — чтобы второй клиент не мог вызвать game_over дважды на ту же игру
-    if (accuracy) game.accuracy = accuracy;
+    // Удаляем сразу — чтобы второй клиент не мог вызвать game_over дважды на ту же игру.
+    // Accuracy: принимаем только числа в диапазоне 0..100 и только по известным ключам.
+    if (accuracy && typeof accuracy === 'object') {
+      const safe = {};
+      for (const key of ['white', 'black']) {
+        const v = Number(accuracy[key]);
+        if (Number.isFinite(v)) safe[key] = Math.max(0, Math.min(100, v));
+      }
+      if (Object.keys(safe).length) game.accuracy = safe;
+    }
     await endGameAuthoritative(gameId, game, norm, reason);
   });
 
   socket.on('resign', async ({ gameId }) => {
+    if (!socket.username) return;
     const game = activeGames.get(gameId); if (!game) return;
-    activeGames.delete(gameId);
-    tournamentGames.delete(gameId);
-    const rc = game.white === socket.username ? 'white' : 'black';
-    const wc = rc === 'white' ? 'black' : 'white';
-    const winSock = findSocketByUsername(wc === 'white' ? game.white : game.black);
-    socket.emit('game_ended', { gameId, result: wc, reason: 'resign' });
-    if (winSock) winSock.emit('game_ended', { gameId, result: wc, reason: 'opponent_resign' });
-    const isTournament = !!game.tournamentId;
-    if (isTournament) { const t = tournaments.find(t => t.id === game.tournamentId); if (t) await finishTournamentGame(t, game, wc, 'resign'); }
-    else if (hasFullMove(game)) { await recordGame(game, wc, 'resign'); await updateStats(game.white, game.black, wc, game.rated !== false); }
+    if (game.white !== socket.username && game.black !== socket.username) return;
+    // Двойной учёт (P1, устранено): хендлер больше не завершает партию сам
+    // (свой delete из карт + recordGame + updateStats + finishTournamentGame),
+    // а передаёт всё в единую авторитарную точку endGameAuthoritative — как
+    // уже делают game_over и серверный тик часов. Она защищена флагом
+    // _finishing от гонки с параллельным resign/timeout/game_over и
+    // гарантирует ровно один финал: одна запись в БД, один инкремент
+    // статистики, одни очки турнира, одно broadcast game_ended.
+    const winner = game.white === socket.username ? 'black' : 'white';
+    await endGameAuthoritative(gameId, game, winner, 'resign');
   });
 
   socket.on('offer_draw', ({ gameId }) => {
+    if (!socket.username) return;
     const game = activeGames.get(gameId); if (!game) return;
+    if (game.white !== socket.username && game.black !== socket.username) return;
+    const nowD = Date.now();
+    if (socket._lastDrawOfferAt && nowD - socket._lastDrawOfferAt < 2000) {
+      return socket.emit('error', 'Не так часто — подождите пару секунд');
+    }
+    socket._lastDrawOfferAt = nowD;
     const opp = game.white === socket.username ? game.black : game.white;
     const os = findSocketByUsername(opp); if (os) os.emit('draw_offered', { gameId, from: socket.username });
   });
 
   socket.on('accept_draw', async ({ gameId }) => {
+    if (!socket.username) return;
     const game = activeGames.get(gameId); if (!game) return;
-    activeGames.delete(gameId);
-    tournamentGames.delete(gameId);
-    const payload = { gameId, result: 'draw', reason: 'agreement' };
-    [findSocketByUsername(game.white), findSocketByUsername(game.black)].forEach(s => s?.emit('game_ended', payload));
-    const isTournament = !!game.tournamentId;
-    if (isTournament) { const t = tournaments.find(t => t.id === game.tournamentId); if (t) await finishTournamentGame(t, game, 'draw', 'agreement'); }
-    else if (hasFullMove(game)) { await recordGame(game, 'draw', 'agreement'); await updateStats(game.white, game.black, 'draw', game.rated !== false); }
+    if (game.white !== socket.username && game.black !== socket.username) return;
+    // Двойной учёт (P1, устранено): завершение — только через единую
+    // авторитарную точку endGameAuthoritative (см. resign выше).
+    await endGameAuthoritative(gameId, game, 'draw', 'agreement');
   });
 
   socket.on('game_chat', ({ gameId, message }) => {
-    const game = activeGames.get(gameId); if (!game) return;
-    const text = (message || '').trim().slice(0, 300); if (!text) return;
+    if (!socket.username) return socket.emit('error', 'Сначала войдите в аккаунт');
+    const game = activeGames.get(gameId);
+    if (!game) return socket.emit('error', 'Партия не найдена (чат недоступен)');
+    if (game.white !== socket.username && game.black !== socket.username) return;
+    const text = (typeof message === 'string' ? message : '').trim().slice(0, 300); if (!text) return;
     const opp = game.white === socket.username ? game.black : game.white;
     const msg = { from: socket.username, message: text, gameId, ts: Date.now() };
     if (!game.chatMessages) game.chatMessages = [];
@@ -750,14 +668,6 @@ io.on('connection', (socket) => {
 
 // ── Фильтр глобального чата ─────────────────────────────────────
 // Та же логика, что уже используется на клиенте (app.js:containsBadWords).
-// БАГ (исправлено): раньше здесь был отдельный, свой, куда более грубый
-// фильтр — плоский .includes() без учёта границ слова. Из-за этого
-// "рубля" (и любое другое слово, просто ЗАКАНЧИВАющееся на "бля") ловилось
-// как мат — а последствие было не просто "сообщение не отправлено", а
-// chatHardBan(): ПОЖИЗНЕННЫЙ бан аккаунта и устройства с удалением
-// истории сообщений. Заодно убрал токсичные-но-не-матерные слова
-// ("дебил","идиот","мразь","тварь","урод","чмошник") — это не мат, их
-// уже убрали из клиентского списка по этой же причине (см. app.js).
 const MAT_WORDS_CHAT = [
   'блять','блядь','бля','пиздец','пизда','пизду','пизды',
   'сука','сучка','хуй','хуе','хер',
@@ -807,10 +717,19 @@ function chatMessageHasBadWords(text) {
 
   socket.on('global_chat', async ({ message }) => {
     if (!socket.username) return;
-    const text = (message || '').trim().slice(0, 300); if (!text) return;
+    const text = (typeof message === 'string' ? message : '').trim().slice(0, 300); if (!text) return;
     const now = Date.now();
+
+    // ── Анти-спам-счётчики проверяем СИНХРОННО и ДО await getUser.
+    if (!socket._chatMsgs) socket._chatMsgs = [];
+    socket._chatMsgs = socket._chatMsgs.filter(t => now - t < 10000); socket._chatMsgs.push(now);
+    if (socket._chatMsgs.length > 10) { socket.emit('error', 'Вы временно отключены за спам в чате'); socket.disconnect(); return; }
+    if (socket._chatMsgs.length > 5) { socket.emit('error', 'Слишком много сообщений. Притормози!'); return; }
+    if (socket._lastChatAt && now - socket._lastChatAt < 1500) { socket.emit('error', 'Не так быстро!'); return; }
+    socket._lastChatAt = now;
+
     const user = await getUser(socket.username.toLowerCase());
-    if (!user || user.banned) { socket.disconnect(); return; }
+    if (!user || user.banned) { socket.emit('auth_error', 'Сессия недействительна'); socket.disconnect(); return; }
 
     if (global.chatBans) {
       const unbanAt = global.chatBans.get(socket.username.toLowerCase());
@@ -823,18 +742,18 @@ function chatMessageHasBadWords(text) {
 
     const chatHardBan = async (reason) => {
       console.warn(`[ChatHardBan] ${socket.username} — ${reason}`);
-      if (user.createdDeviceId) { bannedDevices.add(user.createdDeviceId); await saveBanToDB(null, user.createdDeviceId); }
-      user.banned = true; user.banReason = reason; await saveUser(user);
-      await removeUserChatMessages(socket.username);
+      try {
+        if (user.createdDeviceId) { bannedDevices.add(user.createdDeviceId); await saveBanToDB(null, user.createdDeviceId); }
+        user.banned = true; user.banReason = reason; await saveUser(user);
+        await removeUserChatMessages(socket.username);
+      } catch (e) {
+        // Даже если БД недоступна — блокируем сокет и помечаем юзера в памяти:
+        // бан не должен «отменяться» из-за сбоя хранилища.
+        console.error('[ChatHardBan] DB error:', e.message);
+        usersCache.set(socket.username.toLowerCase(), user);
+      }
       socket.emit('error', 'Заблокирован навсегда: ' + reason); socket.disconnect();
     };
-
-    if (!socket._chatMsgs) socket._chatMsgs = [];
-    socket._chatMsgs = socket._chatMsgs.filter(t => now - t < 10000); socket._chatMsgs.push(now);
-    if (socket._chatMsgs.length > 10) { socket.emit('error', 'Вы временно отключены за спам в чате'); socket.disconnect(); return; }
-    if (socket._chatMsgs.length > 5) { socket.emit('error', 'Слишком много сообщений. Притормози!'); return; }
-    if (socket._lastChatAt && now - socket._lastChatAt < 1500) { socket.emit('error', 'Не так быстро!'); return; }
-    socket._lastChatAt = now;
 
     const textLow = text.toLowerCase().replace(/[:/.\-\s]/g, '');
     const LINK_TRIGGERS = ['http','https','www','tme','discordgg','vkcom','instagramcom','tiktokcom'];
@@ -848,54 +767,57 @@ function chatMessageHasBadWords(text) {
       socket.emit('error', 'Не повторяйся'); return;
     }
     socket._lastChatMsg = text; socket._dupCount = 0;
+    moderation.record({ username: socket.username, channel: 'global-chat', text });
 
     const msg = { id: uuidv4(), username: socket.username, message: text, role: user?.role === 'admin' ? 'admin' : 'user', timestamp: now, emoji: user.emoji || '', vip: isVip(user) };
 
-    // ── Теневой бан: сообщение сохраняем как обычно (для админ-аудита
-    // и истории), но реальным адресатам оно не уходит вообще — рассылаем
-    // только самому автору (чтобы у него всё выглядело как обычная
-    // успешная отправка) и админам (чтобы можно было проверить, что он
-    // пишет). Остальные получатели никогда не увидят это сообщение —
-    // ни в реальном времени, ни при следующей загрузке истории (см.
-    // фильтр по msg.shadowHidden в GET /api/chat).
     if (user.shadowBanned) {
       msg.shadowHidden = true;
       globalChat.push(msg); if (globalChat.length > 500) globalChat.shift();
       socket.emit('global_chat', msg);
       emitToAdmins('global_chat', msg).catch(() => {});
-      saveChatMsg(msg).catch(e => console.error('[Chat save]', e.message));
+      try { await saveChatMsg(msg); } catch (e) { console.error('[Chat save]', e.message); }
       return;
     }
 
     globalChat.push(msg); if (globalChat.length > 500) globalChat.shift();
     io.emit('global_chat', msg);
-    saveChatMsg(msg).catch(e => console.error('[Chat save]', e.message));
+    // Сообщение сохраняем в БД ДО/параллельно с рассылкой и await'им: иначе при
+    // падении БД сообщение уже разошлось в реальном времени, но в историю не
+    // попало — после рестарта сервера «исчезает» из загруженной истории.
+    try { await saveChatMsg(msg); } catch (e) { console.error('[Chat save]', e.message); }
   });
 
   socket.on('disconnect', () => {
     const sess = sessions.get(socket.id);
     if (sess) {
-      onlineUsers.delete(sess.username); sessions.delete(socket.id);
-      // Чистим индекс, только если он всё ещё указывает на этот сокет
-      // (иначе можно случайно удалить более свежую запись при реконнекте).
-      if (usernameToSocketId.get(sess.username.toLowerCase()) === socket.id) {
-        usernameToSocketId.delete(sess.username.toLowerCase());
+      sessions.delete(socket.id);
+      // Multi-socket: убираем только ЭТОТ сокет из набора юзера; онлайн-счётчик
+      // уменьшаем, лишь когда у юзера не осталось ни одного сокета.
+      const low = sess.username.toLowerCase();
+      const ids = usernameToSocketId.get(low);
+      if (ids) {
+        ids.delete(socket.id);
+        if (ids.size === 0) {
+          usernameToSocketId.delete(low);
+          onlineUsers.delete(sess.username);
+        }
+      } else {
+        onlineUsers.delete(sess.username);
       }
-      io.emit('online_count', onlineUsers.size);
-      for (const t of tournaments) {
+      // Турнирную паузу/возврат в очередь делаем ТОЛЬКО если у юзера не
+      // осталось других живых сокетов (multi-socket): отключение DM-сокета
+      // header.js не должно снимать игрока с очереди поиска партии.
+      const userStillOnline = usernameToSocketId.has(sess.username.toLowerCase());
+      if (!userStillOnline) {
+        io.emit('online_count', onlineUsers.size);
+        for (const t of tournaments) {
         const p = t.participants.find(p => p.username === sess.username);
-        // БАГ: тут игрока молча вынимало из очереди поиска (waiting=false) при
-        // любом обрыве соединения (сеть моргнула, телефон заблокировался,
-        // сворачивание вкладки) — без paused=true и без broadcast. При
-        // реконнекте auth-хендлер проверял "myPart.waiting && !myPart.paused",
-        // но waiting уже был false, поэтому поиск соперника сам НЕ возобновлялся,
-        // и игрок застревал на экране "пауза", хотя сам её не ставил.
-        // Запоминаем, что человека нужно вернуть в очередь при следующем auth,
-        // если он именно ждал соперника, а не поставил паузу сам.
         if (p && p.waiting && !p.left && !p.anticheatBanned && !p.currentGameId) {
           p._resumeOnReconnect = true;
         }
         if (p) p.waiting = false;
+      }
       }
     }
   });

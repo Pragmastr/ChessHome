@@ -18,8 +18,15 @@
   // header.js подключается на КАЖДОЙ странице сайта, поэтому сам гарантирует
   // наличие /js/i18n.js — странице не нужно помнить о нём отдельно. Если
   // i18n.js уже подключён (как в settings.html) — просто дожидаемся его.
+  // Запасные подписи для ключей, которых ещё нет в словарях /js/i18n.js
+  // (пока ключ не добавлен в словарь — показываем русский текст вместо «header.xxx»).
+  const I18N_FALLBACK = {
+    'header.nav_vs_computer': 'Игра с компьютером',
+  };
   function t(key, vars) {
-    return (window.CH_I18N && window.CH_I18N.t) ? window.CH_I18N.t(key, vars) : key;
+    const r = (window.CH_I18N && window.CH_I18N.t) ? window.CH_I18N.t(key, vars) : key;
+    if ((!r || r === key) && I18N_FALLBACK[key]) return I18N_FALLBACK[key];
+    return r;
   }
   function _ensureI18nReady() {
     return new Promise(resolve => {
@@ -50,6 +57,7 @@
       i18nLabel: 'header.sec_play',
       items: [
         { id: 'lobby',       i18nLabel: 'header.nav_play',   icon: '⚔️',  href: '/lobby' },
+        { id: 'vs-computer', i18nLabel: 'header.nav_vs_computer', icon: '🖥️', href: '/vs-computer.html', spa: false },
         { id: 'tournaments', i18nLabel: 'header.nav_tournaments',  icon: '🏆',  href: '/tournaments', spa: false },
         { id: 'club-tournaments', i18nLabel: 'header.nav_club_tournaments', icon: '🏰', href: '/interclub-tournaments.html', spa: false },
       ]
@@ -75,6 +83,7 @@
       items: [
         { id: 'analysis', i18nLabel: 'header.nav_analysis',   icon: '🔍', href: '/analysis' },
         { id: 'editor',   i18nLabel: 'header.nav_editor', icon: '✏️', href: '/editor' },
+        { id: 'ai',       i18nLabel: 'header.nav_ai',      icon: '🤖', href: '/ai', spa: false },
       ]
     },
     {
@@ -100,14 +109,27 @@
     { id: 'home',     i18nLabel: 'header.nav_home', icon: '♚', href: '/' },
     { id: 'lobby',    i18nLabel: 'header.nav_play',  icon: '⚔️', href: '/lobby' },
     { id: 'puzzles',  i18nLabel: 'header.nav_puzzles',  icon: '🧩', href: '/puzzles' },
-    { id: 'stats',    i18nLabel: 'header.nav_analysis',    icon: '🔍', href: '/analysis', spa: false },
+    // Фикс: id должен совпадать с идентификатором страницы ('analysis'),
+    // иначе подсветка активного пункта нижней навигации не срабатывает.
+    { id: 'analysis', i18nLabel: 'header.nav_analysis',    icon: '🔍', href: '/analysis', spa: false },
     { id: 'more',     i18nLabel: 'header.nav_more',     icon: '☰',  href: null, action: 'drawer' },
   ];
+
+  // Подсветка активного пункта меню по адресу страницы (для отдельных .html-страниц,
+  // которые не вызывают CH.setActivePage сами). Сравниваем без «.html» и без слэша в конце.
+  function _detectActivePage() {
+    try {
+      const norm = p => (p || '/').replace(/\/+$/, '').replace(/\.html$/, '') || '/';
+      const cur = norm(location.pathname);
+      for (const sec of NAV) for (const it of sec.items) if (it.href && norm(it.href) === cur) return it.id;
+    } catch (e) {}
+    return null;
+  }
 
   // ─── STATE ────────────────────────────────────────────────────────────────
   const _s = {
     currentUser: null,
-    activePage: null,
+    activePage: _detectActivePage(),
     onlineCount: 0,
     unreadCount: 0,
     unreadPollTimer: null,
@@ -164,9 +186,6 @@
       const sock = window.io();
       _s.dmSocket = sock;
       // Токен теперь в HttpOnly-cookie: сервер сам читает JWT из cookie в
-      // заголовках handshake и игнорирует то, что мы шлём аргументом — раньше
-      // emit вообще не срабатывал, потому что гейтился по localStorage-токену,
-      // которого больше нет. Функция уже гарантирует наличие _s.currentUser выше.
       sock.on('connect', () => sock.emit('auth'));
       sock.on('dm_message', msg => {
         if (!msg || !_s.currentUser) return;
@@ -181,11 +200,11 @@
   }
 
   // ─── ХЕЛПЕРЫ ──────────────────────────────────────────────────────────────
-  function esc(s) {
-    return String(s || '').replace(/[&<>"']/g, c =>
-      ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-  }
-  function isAdmin(u) { return u && ADMINS.includes(u.username); }
+  // esc — псевдоним общей escapeHtml из /js/utils.js (2Б, унификация):
+  // локальная копия с ручными replace удалена. utils.js подключён на всех
+  // страницах перед header.js.
+  const esc = window.escapeHtml;
+  function isAdmin(u) { return !!u && (u.role === 'admin' || ADMINS.includes(u.username)); }
   // Значок VIP приходит с сервера уже посчитанным (u.vip) — сам гаснет через месяц,
   // здесь просто рисуем картинку, если он активен.
   function vipBadgeHTML(u) {
@@ -824,7 +843,7 @@
     header.innerHTML = `
       <a href="/" class="ch-logo"
         onclick="event.preventDefault();(window.showPage?showPage('home'):location.href='/')">
-        <img src="../img/logo/logo.png" alt="" class="ch-logo-icon">
+        <img src="/img/logo/logo.png" alt="" class="ch-logo-icon">
         <span class="ch-logo-text">Chess Home</span>
       </a>
       <ul id="ch-nav">${_buildDesktopNav()}</ul>
@@ -850,7 +869,7 @@
     drawer.setAttribute('aria-modal', 'true');
     drawer.innerHTML = `
       <div class="ch-dr-head">
-        <div class="ch-dr-logo"> <img src="../img/logo/logo.png" alt="ChessHome"> ChessHome </div>
+        <div class="ch-dr-logo"> <img src="/img/logo/logo.png" alt="ChessHome"> ChessHome </div>
         <button class="ch-dr-close" onclick="CH.closeMobileNav()">✕</button>
       </div>
       <div class="ch-dr-links" id="ch-drawer-links">${_buildDrawerLinks()}</div>
@@ -972,9 +991,6 @@
           </button>
         </div>
       </div>`;
-{/* <a href="/settings.html" onclick="event.preventDefault();(window.showPage?showPage('settings'):location.href='/settings')">
-            <span class="ch-di-icon">⚙️</span>${esc(t('header.nav_settings'))}
-          </a> */}
     document.getElementById('ch-user-btn').addEventListener('click', e => {
       e.stopPropagation();
       const drop = document.getElementById('ch-udrop');
@@ -1001,11 +1017,6 @@
       CH.fetchOnlineCount();
 
       // Токен теперь в HttpOnly-cookie — восстанавливать юзера через
-      // localStorage.getItem('ch_token') больше не работает (там всегда
-      // пусто), из-за чего хедер везде показывал "Вход/Регистрация", даже
-      // если сессия была валидна. Теперь просто спрашиваем сервер напрямую:
-      // /api/me сам прочитает cookie. Если страница уже вызвала
-      // CH.setCurrentUser() раньше нас — не дёргаем /api/me лишний раз.
       if (!_s.currentUser) {
         fetch('/api/me', { credentials: 'same-origin' })
           .then(res => res.ok ? res.json() : null)
@@ -1015,7 +1026,7 @@
         CH.fetchUnreadCount();
         _connectDmSocket();
         if (!_s.unreadPollTimer) {
-          _s.unreadPollTimer = setInterval(CH.fetchUnreadCount, 7000);
+          _s.unreadPollTimer = setInterval(() => { if (!document.hidden) CH.fetchUnreadCount(); }, 7000);
         }
       }
       return CH;
@@ -1034,7 +1045,7 @@
         CH.fetchUnreadCount();
         _connectDmSocket();
         if (!_s.unreadPollTimer) {
-          _s.unreadPollTimer = setInterval(CH.fetchUnreadCount, 7000);
+          _s.unreadPollTimer = setInterval(() => { if (!document.hidden) CH.fetchUnreadCount(); }, 7000);
         }
       } else if (_s.unreadPollTimer) {
         clearInterval(_s.unreadPollTimer);
@@ -1168,15 +1179,19 @@
     },
 
     openAuthModal(mode = 'login') {
-      if (typeof window.openModal === 'function') openModal('modal-' + mode);
-      else if (typeof window.showPage === 'function') showPage('home');
-      else window.location = '/#' + mode;
+      // На странице может не быть своей модалки авторизации (profile/forum
+      // удалили локальные дубли — DRY). Открываем её, если она есть,
+      // иначе ведём на главную, где живёт каноничная форма.
+      const el = document.getElementById('modal-' + mode);
+      if (el) {
+        if (typeof window.openModal === 'function') { window.openModal('modal-' + mode); return; }
+        el.classList.add('open');
+        return;
+      }
+      window.location = '/#' + mode;
     },
 
     async logout() {
-      // Раньше здесь только чистили localStorage — но токен в HttpOnly-cookie,
-      // так что сессия на сервере оставалась активной, и пользователь по факту
-      // не выходил из аккаунта. Теперь явно просим сервер очистить cookie.
       try { await fetch('/api/logout', { method: 'POST', credentials: 'same-origin' }); } catch (e) {}
       localStorage.removeItem('ch_user');
       _s.currentUser = null;
@@ -1194,11 +1209,43 @@
   window.closeMobileNav  = () => CH.closeMobileNav();
   window.CH = CH;
 
+  // ── Баннер обновления документов (4.5) ───────────────────────────────────
+  const POLICY_VERSION = 'v1.1-2025-06-12';
+  window.dismissPolicyBanner = function () {
+    try { localStorage.setItem('ch_policy_seen', POLICY_VERSION); } catch {}
+    const b = document.getElementById('policy-banner');
+    if (b) { b.style.transition = 'opacity 0.3s'; b.style.opacity = '0'; setTimeout(() => b.remove(), 300); }
+  };
+  function injectPolicyBanner() {
+    if (document.getElementById('policy-banner')) return;
+    try {
+      if (localStorage.getItem('ch_policy_seen') === POLICY_VERSION) return;
+    } catch {}
+    const el = document.createElement('div');
+    el.id = 'policy-banner';
+    el.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);z-index:9999;background:#1a2a3a;border:1px solid #3a5a7a;border-radius:12px;padding:16px 24px;max-width:480px;width:calc(100% - 48px);box-shadow:0 8px 32px rgba(0,0,0,0.5);display:flex;flex-direction:column;gap:10px';
+    el.innerHTML =
+      '<div style="display:flex;align-items:flex-start;gap:12px">' +
+        '<span style="font-size:22px;flex-shrink:0">📋</span>' +
+        '<div>' +
+          '<div style="font-weight:700;color:#e0e0e0;margin-bottom:4px" data-i18n="home.policy_banner_title">' + esc(t('home.policy_banner_title')) + '</div>' +
+          '<div style="color:#a0b8c8;font-size:13px;line-height:1.5" data-i18n="home.policy_banner_text">' + esc(t('home.policy_banner_text')) + '</div>' +
+        '</div>' +
+      '</div>' +
+      '<div style="display:flex;gap:8px;justify-content:flex-end">' +
+        '<a href="/terms.html" style="font-size:13px;color:#7c9cbf;text-decoration:none;padding:6px 12px;border:1px solid #3a5a7a;border-radius:6px" data-i18n="home.policy_banner_read">' + esc(t('home.policy_banner_read')) + '</a>' +
+        '<button onclick="dismissPolicyBanner()" style="font-size:13px;background:#3a6a9a;color:#fff;border:none;border-radius:6px;padding:6px 16px;cursor:pointer" data-i18n="home.policy_banner_ok">' + esc(t('home.policy_banner_ok')) + '</button>' +
+      '</div>';
+    document.body.appendChild(el);
+  }
+
   // Авто-запуск
+  // Баннер — после загрузки i18n-словаря (иначе t() вернёт сырые ключи).
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', () => CH.initHeader());
+    document.addEventListener('DOMContentLoaded', () => { CH.initHeader(); _ensureI18nReady().then(injectPolicyBanner); });
   } else {
     CH.initHeader();
+    _ensureI18nReady().then(injectPolicyBanner);
   }
 
   // При смене языка (кнопка в настройках) хедер не отслеживает data-i18n —
@@ -1210,4 +1257,14 @@
     _renderHeaderRight();
   });
 
+})();
+
+// ── Сбор признаков окружения для защиты от мультиаккаунтов (см. /js/sig.js, privacy.html 2.4) ──
+// Грузим один раз на любой странице, где подключён хедер. Защита от двойной загрузки внутри sig.js.
+(function () {
+  if (window.__chSig || document.querySelector('script[src="/js/sig.js"]')) return;
+  var s = document.createElement('script');
+  s.src = '/js/sig.js';
+  s.defer = true;
+  document.head.appendChild(s);
 })();

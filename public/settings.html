@@ -5,8 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title data-i18n="settings.page_title">Настройки — Chess Home</title>
   <link rel="stylesheet" href="/css/main.css">
+  <script src="/js/utils.js"></script>
+  <script src="/js/api.js"></script>
+  <script src="/js/toast.js"></script>
   <script src="/js/header.js"></script>
   <script src="/js/i18n.js"></script>
+  <script src="/js/emojis.js"></script>
   <link rel="shortcut icon" href="img/logo/favicon.png" type="image/x-icon">
   <style>
     .lang-btn.active {
@@ -15,6 +19,7 @@
       font-weight: 600;
     }
   </style>
+</head>
 <body>
 <div id="app" style="padding-top:56px">
   <div style="padding:40px 24px;max-width:700px;margin:0 auto">
@@ -133,15 +138,53 @@
       <div id="settings-account-info">
         <div style="color:var(--text-secondary);font-size:14px" id="account-info-text" data-i18n="settings.account_not_logged_in">Войдите в аккаунт для управления профилем</div>
       </div>
-      <div class="settings-row" id="row-2fa" style="display:none">
+      <!-- Смена пароля -->
+      <div class="settings-row" id="row-change-password" style="display:none">
         <div class="settings-label">
-          <div class="settings-label-name" data-i18n="settings.twofa_name">Подтверждение входа по email (2FA)</div>
-          <div class="settings-label-desc" data-i18n="settings.twofa_desc">При входе будет запрашиваться код, отправленный на вашу почту</div>
+          <div class="settings-label-name">Пароль</div>
+          <div class="settings-label-desc">Смена пароля. Потребуется ваш текущий пароль.</div>
         </div>
-        <label class="toggle">
-          <input type="checkbox" id="set-2fa" onchange="toggle2FA(this)">
-          <div class="toggle-slider"></div>
-        </label>
+        <button class="btn btn-ghost btn-sm" onclick="openChangePasswordModal()">Сменить пароль</button>
+      </div>
+      <!-- Удаление аккаунта (issue #50) -->
+      <div class="settings-row" id="row-delete-account" style="display:none">
+        <div class="settings-label">
+          <div class="settings-label-name" style="color:var(--danger,#e05252)" data-i18n="settings.delete_name">Удаление аккаунта</div>
+          <div class="settings-label-desc">Необратимо удаляет аккаунт, статистику и сообщения. Потребуется ваш пароль.</div>
+        </div>
+        <button class="btn btn-ghost btn-sm" style="color:var(--danger,#e05252)" onclick="requestDeleteAccount()" data-i18n="settings.delete_btn">Удалить аккаунт</button>
+      </div>
+    </div>
+
+    <!-- МОДАЛКА ПОДТВЕРЖДЕНИЯ ПАРОЛЕМ (удаление аккаунта).
+         Раньше контейнер назывался modal-confirm-code — атавизм времён
+         планировавшихся 2FA/подтверждения по email (выработаны из продукта);
+         теперь имя отражает реальную логику — подтверждение паролем. -->
+    <div id="modal-confirm-password" class="modal-overlay" style="display:none">
+      <div class="modal" style="max-width:420px">
+        <h3 style="margin-top:0">Удаление аккаунта</h3>
+        <p style="color:var(--text-secondary);font-size:14px">Введите свой пароль для подтверждения. Действие необратимо.</p>
+        <input type="password" id="confirm-password-input" class="input" style="width:100%;padding:10px 14px" autocomplete="current-password">
+        <div style="display:flex;gap:10px;margin-top:16px">
+          <button class="btn btn-primary btn-sm" style="flex:1;background:var(--danger,#e05252)" onclick="submitDeleteAccount()">Удалить навсегда</button>
+          <button class="btn btn-ghost btn-sm" style="flex:1" onclick="closeConfirmPasswordModal()">Отмена</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- МОДАЛКА СМЕНЫ ПАРОЛЯ -->
+    <div id="modal-change-password" class="modal-overlay" style="display:none">
+      <div class="modal" style="max-width:420px">
+        <h3 style="margin-top:0">Смена пароля</h3>
+        <div style="display:flex;flex-direction:column;gap:10px">
+          <input type="password" id="pw-current" class="input" style="width:100%;padding:10px 14px" placeholder="Текущий пароль" autocomplete="current-password">
+          <input type="password" id="pw-new" class="input" style="width:100%;padding:10px 14px" placeholder="Новый пароль (минимум 6 символов)" autocomplete="new-password">
+          <input type="password" id="pw-repeat" class="input" style="width:100%;padding:10px 14px" placeholder="Повторите новый пароль" autocomplete="new-password" onkeydown="if(event.key==='Enter')submitChangePassword()">
+        </div>
+        <div style="display:flex;gap:10px;margin-top:16px">
+          <button class="btn btn-primary btn-sm" id="pw-submit-btn" style="flex:1" onclick="submitChangePassword()">Сменить пароль</button>
+          <button class="btn btn-ghost btn-sm" style="flex:1" onclick="closeChangePasswordModal()">Отмена</button>
+        </div>
       </div>
     </div>
 
@@ -175,7 +218,6 @@
   </div>
 </div>
 
-<div id="toast-container"></div>
 
 <script>
 const API = '/api';
@@ -183,14 +225,7 @@ let currentUser = null;
 // Токен — в HttpOnly-cookie ch_token, JS её не видит и не должен;
 // браузер сам прикладывает её к запросам на тот же origin.
 
-function toast(msg, type='info') {
-  const c = document.getElementById('toast-container');
-  const el = document.createElement('div');
-  el.className = 'toast ' + type;
-  el.innerHTML = '<span>' + ({success:'✓',error:'✗',info:'ℹ'}[type]||'ℹ') + '</span><span>' + msg + '</span>';
-  c.appendChild(el);
-  setTimeout(() => { el.style.opacity='0'; el.style.transition='.3s'; setTimeout(()=>el.remove(),300); }, 3000);
-}
+// toast() — глобальная, из /js/toast.js
 
 // ── Язык ──────────────────────────────────────────────────────
 async function setLang(lang) {
@@ -207,19 +242,7 @@ function updateLangButtons() {
   document.getElementById('lang-btn-en')?.classList.toggle('active', cur === 'en');
 }
 
-async function apiGet(path) {
-  const res = await fetch(API + path, { credentials: 'same-origin' });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error || CH_I18N.t('common.error'));
-  return data;
-}
-
-async function apiPost(path, body) {
-  const res = await fetch(API + path, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error || CH_I18N.t('common.error'));
-  return data;
-}
+// apiGet/apiPost — глобальные, из /js/api.js (2А, унификация)
 
 function updateHeaderUI() { if (window.CH) CH.setCurrentUser(currentUser); }
 
@@ -245,34 +268,8 @@ function setBoardTheme(light, dark) {
   toast(CH_I18N.t('settings.toast_board_theme_saved'), 'success');
 }
 
-// ── Эмодзи ────────────────────────────────────────────────────
-const EMOJIS = [
-  '😀','😃','😄','😁','😆','😅','😂','🤣','😊','😇','🙂','🙃','😉','😌','😍','🥰',
-  '😘','😗','😙','😚','😋','😛','😝','😜','🤪','🤨','🧐','🤓','😎','🤩','🥳','😏',
-  '😒','😞','😔','😟','😕','🙁','☹️','😣','😖','😫','😩','🥺','😢','😭','😤','😠',
-  '😡','🤬','🤯','😳','🥵','🥶','😱','😨','😰','😥','😓','🤗','🤔','🤭','🤫','🤥',
-  '😶','😐','😑','😬','🙄','😯','😦','😧','😮','😲','🥱','😴','🤤','😪','😵','🤐',
-  '🥴','🤢','🤮','🤧','😷','🤒','🤕','🤑','🤠','😈','👿','👹','👺','💩','👻','💀',
-  '☠️','👽','🤖','🎃','😺','😸','😹','😻','😼','😽','🙀','😿','😾','🙈','🙉','🙊',
-  '🐶','🐱','🐭','🐹','🐰','🦊','🐻','🐼','🐨','🐯','🦁','🐮','🐷','🐸','🐒','🐔',
-  '🐧','🐦','🐤','🐣','🐥','🐺','🐗','🐴','🦄','🐝','🐛','🦋','🐌','🐞','🐜','🦟',
-  '🦗','🕷️','🦂','🐢','🐍','🦎','🐙','🦑','🦐','🦞','🐠','🐟','🐡','🐬','🐳','🐋',
-  '🦈','🐊','🐅','🐆','🦓','🦍','🦧','🦣','🐘','🦛','🦏','🐪','🐫','🦒','🦘','🐃',
-  '🐂','🐄','🐎','🐖','🐏','🐑','🦙','🐐','🦌','🐕','🐩','🐈','🐓','🦃','🐇','🐁',
-  '🐀','🐿️','🦔','🐾','🐉','🐲','🌵','🎄','🌲','🌳','🌴','🌿','🍀','🍁','🍂','🍃',
-  '🍇','🍈','🍉','🍊','🍋','🍌','🍍','🥭','🍎','🍏','🍐','🍑','🍒','🍓','🥝','🍅',
-  '🥥','🥑','🍆','🥔','🥕','🌽','🌶️','🥒','🥬','🥦','🧄','🧅','🍄','🥜','🌰','🍞',
-  '🥐','🥖','🥨','🥯','🥞','🧇','🧀','🍖','🍗','🥩','🥓','🍔','🍟','🍕','🌭','🥪',
-  '🌮','🌯','🥙','🧆','🥚','🍳','🥘','🍲','🥣','🥗','🍿','🧈','🧂','🥫','🍱','🍘',
-  '🍙','🍚','🍛','🍜','🍝','🍠','🍢','🍣','🍤','🍥','🥮','🍡','🥟','🥠','🥡','🦀',
-  '🍦','🍧','🍨','🍩','🍪','🎂','🍰','🧁','🥧','🍫','🍬','🍭','🍮','🍯','🥛','🍼',
-  '🥤','🧃','🧉','🧊','🍺','🍻','🥂','🥃','🥄','🍴','🍽️','🥢',
-  '⚽','🏀','🏈','⚾','🥎','🏐','🏉','🎾','🥏','🎳','🏆','🥇','🥈','🥉',
-  '🎮','🕹️','🎲','🎭','🎨','🎬','🎤','🎧','🎼','🎹','🥁','🎸','🎷','🎺','🎻',
-  '❤️','🧡','💛','💚','💙','💜','🖤','🤍','🤎','💔','💕','💞','💓','💗','💖','💘','💝',
-  '✨','🌟','⭐','🌙','☀️','🌈','⚡','💫','☄️','❄️','☃️','⛄','🔥','💧','🌊','🌪️',
-  '🎁','🎀','🎊','🎉','🎈','🎃','🎄','🎋','🎆','🎇'
-];
+// ── Эмодзи: массив EMOJIS вынесен в общий /js/emojis.js (4.2) ──
+
 
 function closeModalEmoji() {
   document.getElementById('modal-emoji').classList.remove('open');
@@ -318,20 +315,66 @@ async function removeEmoji() {
   } catch (err) { toast(err.message, 'error'); }
 }
 
-// ── 2FA ───────────────────────────────────────────────────────
-async function toggle2FA(checkbox) {
-  const wantEnabled = checkbox.checked;
-  checkbox.disabled = true;
+// ── Смена пароля ──
+function openChangePasswordModal() {
+  if (!currentUser) { toast(CH_I18N.t('common.login_required'), 'error'); return; }
+  const m = document.getElementById('modal-change-password');
+  m.style.display = 'flex'; m.classList.add('open');
+  setTimeout(() => document.getElementById('pw-current')?.focus(), 50);
+}
+
+function closeChangePasswordModal() {
+  const m = document.getElementById('modal-change-password');
+  m.classList.remove('open'); m.style.display = 'none';
+  ['pw-current', 'pw-new', 'pw-repeat'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+}
+
+async function submitChangePassword() {
+  const currentPassword = document.getElementById('pw-current')?.value || '';
+  const newPassword = document.getElementById('pw-new')?.value || '';
+  const repeat = document.getElementById('pw-repeat')?.value || '';
+  if (!currentPassword || !newPassword || !repeat) { toast('Заполните все поля', 'error'); return; }
+  if (newPassword.length < 6) { toast('Пароль минимум 6 символов', 'error'); return; }
+  if (newPassword !== repeat) { toast('Пароли не совпадают', 'error'); return; }
+  if (newPassword === currentPassword) { toast('Новый пароль совпадает с текущим', 'error'); return; }
+  const btn = document.getElementById('pw-submit-btn');
+  if (btn) btn.disabled = true;
   try {
-    const data = await apiPost('/account/2fa/toggle', { enabled: wantEnabled });
-    checkbox.checked = !!data.twoFactorEnabled;
-    toast(CH_I18N.t(data.twoFactorEnabled ? 'settings.toast_2fa_on' : 'settings.toast_2fa_off'), 'success');
+    await apiPost('/account/password', { currentPassword, newPassword });
+    closeChangePasswordModal();
+    toast('Пароль изменён', 'success');
   } catch (err) {
-    checkbox.checked = !wantEnabled; // откатываем визуально при ошибке
     toast(err.message, 'error');
   } finally {
-    checkbox.disabled = false;
+    if (btn) btn.disabled = false;
   }
+}
+
+// ── Удаление аккаунта (подтверждение паролем — email выведен из продукта) ──
+function requestDeleteAccount() {
+  if (!currentUser) { toast(CH_I18N.t('common.login_required'), 'error'); return; }
+  if (!confirm(CH_I18N.t('settings.delete_confirm'))) return;
+  const m = document.getElementById('modal-confirm-password');
+  m.style.display = 'flex'; m.classList.add('open');
+  setTimeout(() => document.getElementById('confirm-password-input')?.focus(), 50);
+}
+
+function closeConfirmPasswordModal() {
+  const m = document.getElementById('modal-confirm-password');
+  m.classList.remove('open'); m.style.display = 'none';
+  const inp = document.getElementById('confirm-password-input');
+  if (inp) inp.value = '';
+}
+
+async function submitDeleteAccount() {
+  const password = document.getElementById('confirm-password-input')?.value || '';
+  if (!password) { toast('Введите пароль', 'error'); return; }
+  try {
+    await apiPost('/account/delete', { password });
+    // Сервер отключает сокет и снимает сессию — уходим на главную
+    alert(CH_I18N.t('settings.delete_done'));
+    window.location.href = '/';
+  } catch (err) { toast(err.message, 'error'); }
 }
 
 function updateEmojiPreview(emoji) {
@@ -385,12 +428,11 @@ async function init() {
   // Аккаунт-блок
   if (currentUser) {
     renderAccountInfo();
-    const row2fa = document.getElementById('row-2fa');
-    const set2fa = document.getElementById('set-2fa');
-    if (row2fa && set2fa) {
-      row2fa.style.display = '';
-      set2fa.checked = !!currentUser.twoFactorEnabled;
-    }
+    // Удаление аккаунта — подтверждение паролем
+    const rowDelete = document.getElementById('row-delete-account');
+    if (rowDelete) rowDelete.style.display = '';
+    const rowPw = document.getElementById('row-change-password');
+    if (rowPw) rowPw.style.display = '';
   }
 }
 init();

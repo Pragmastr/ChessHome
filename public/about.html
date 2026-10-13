@@ -1,6 +1,8 @@
 <!DOCTYPE html>
 <html lang="ru">
 <head>
+<script src="/js/utils.js"></script>
+<script src="/js/api.js"></script>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>О проекте — Chess Home</title>
@@ -95,14 +97,13 @@
 </div>
 <div id="toast-container"></div>
 <script>
-const API='/api';let currentUser=null;
-function escapeHtml(s){if(!s)return'';return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+let currentUser=null;
+// escapeHtml (P0, унификация): общая реализация в /js/utils.js
+// apiGet/apiPost — глобальные, из /js/api.js (2А, унификация)
 function getSettings(){try{return JSON.parse(localStorage.getItem('ch_settings')||'{}');}catch{return{};}}
 function applySettings(){const s=getSettings();if(s.boardLight)document.documentElement.style.setProperty('--board-light',s.boardLight);if(s.boardDark)document.documentElement.style.setProperty('--board-dark',s.boardDark);}
 // Токен теперь лежит в HttpOnly-cookie и отправляется браузером автоматически
 // (credentials: 'same-origin'), поэтому Authorization-заголовок больше не нужен.
-async function apiGet(path){const res=await fetch(API+path,{credentials:'same-origin'});const data=await res.json();if(!res.ok)throw new Error(data.error||'Ошибка');return data;}
-async function apiPost(path,body){const res=await fetch(API+path,{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const data=await res.json();if(!res.ok)throw new Error(data.error||'Ошибка');return data;}
 function toast(msg,type='info'){const c=document.getElementById('toast-container');const el=document.createElement('div');el.className='toast '+type;el.textContent=msg;c.appendChild(el);setTimeout(()=>el.remove(),3000);}
 function updateHeaderUI() {
   CH.setCurrentUser(currentUser);
@@ -112,9 +113,6 @@ function updateHeaderUI() {
 document.addEventListener('click',e=>{if(!e.target.closest('.user-menu'))document.getElementById('hdr-drop')?.classList.remove('open');});
 async function initHeader() {
   CH.initHeader();
-  // Раньше юзернейм доставали из JWT в localStorage. Токен теперь в HttpOnly-cookie
-  // и недоступен из JS, поэтому просто спрашиваем у сервера, кто мы — /api/me
-  // сам читает cookie и возвращает текущего пользователя (или 401, если гость).
   try {
     currentUser = await apiGet('/me');
   } catch {

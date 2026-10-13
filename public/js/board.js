@@ -20,6 +20,15 @@ const chessBoard = (() => {
   // activeColor теперь хранит чьё время ТИКАЕТ (кто ходит прямо сейчас)
   let activeColor = 'w';
 
+  // i18n-хелпер: словарь может быть ещё не загружен — тогда русский fallback
+  function T(key, fallback) {
+    try {
+      const v = window.CH_I18N ? window.CH_I18N.t(key) : undefined;
+      if (v && v !== key) return v;
+    } catch (e) { /* i18n недоступен */ }
+    return fallback !== undefined ? fallback : key;
+  }
+
   // Game info
   let gameOpponent = '';
   let _tournamentId = null;
@@ -51,7 +60,7 @@ const chessBoard = (() => {
     slider._chInited = true;
     slider.min = 280; slider.max = 800; slider.step = 10;
     slider.value = _boardPx >= 280 ? _boardPx : 500;
-    if (label) label.textContent = _boardPx >= 280 ? _boardPx + 'px' : 'Авто';
+    if (label) label.textContent = _boardPx >= 280 ? _boardPx + 'px' : T('game.auto', 'Авто');
 
     // Обновляем fill-градиент трека
     function updateSliderFill() {
@@ -472,7 +481,11 @@ const chessBoard = (() => {
     playSound(move);
 
     if (gameMode === 'online' && socket) {
-      socket.emit('make_move', { gameId, move });
+      if (typeof emitGameplayEvent === 'function') {
+        emitGameplayEvent('make_move', { gameId, move });
+      } else {
+        socket.emit('make_move', { gameId, move });
+      }
     }
 
     checkGameStatus();
@@ -517,22 +530,31 @@ const chessBoard = (() => {
     render();
   }
 
-  // Русские подписи причин ничьей — используются и в мгновенном локальном
+  // Локализованные подписи причин ничьей — используются и в мгновенном локальном
   // окне результата (checkGameStatus), и в подтверждённом сервером
   // результате (onGameEnded), чтобы текст совпадал в обоих случаях.
-  const DRAW_REASON_RU = {
+  const DRAW_REASON_KEYS = {
+    'stalemate':             'game.draw_stalemate',
+    'fifty-move':            'game.draw_fifty',
+    'insufficient-material': 'game.draw_material',
+    'threefold-repetition':  'game.draw_repetition',
+  };
+  const DRAW_REASON_FALLBACK = {
     'stalemate':             'Пат',
     'fifty-move':            'Правило 50 ходов',
     'insufficient-material': 'Недостаточно материала для мата',
     'threefold-repetition':  'Троекратное повторение позиции',
   };
+  function drawReasonText(reason) {
+    const key = DRAW_REASON_KEYS[reason];
+    return key ? T(key, DRAW_REASON_FALLBACK[reason]) : (reason || '');
+  }
 
   function checkGameStatus() {
     const status = ChessEngine.getStatus(state);
     if (status.status === 'checkmate') {
       setTimeout(() => {
-        const winner = status.winner === 'w' ? 'Белые' : 'Чёрные';
-        showGameResult(`${winner} победили!`, 'Мат');
+        showGameResult(status.winner === 'w' ? T('game.win_white', 'Белые победили!') : T('game.win_black', 'Чёрные победили!'), T('game.checkmate', 'Мат'));
         if (gameMode === 'online' && socket) {
           socket.emit('game_over', { gameId, result: status.winner, reason: 'checkmate' });
         }
@@ -540,12 +562,7 @@ const chessBoard = (() => {
       }, 100);
     } else if (status.status === 'stalemate') {
       setTimeout(() => {
-        showGameResult('Ничья', DRAW_REASON_RU.stalemate);
-        // БАГ (исправлено): раньше здесь только показывали окно и глушили
-        // свои часы, но не сообщали серверу — партия оставалась «живой»
-        // в activeGames, серверные часы продолжали тикать, а ходить было
-        // невозможно (позиция патовая). Теперь, как и при мате, шлём
-        // game_over — сервер сам перепроверяет пат и завершает партию.
+        showGameResult(T('game.draw', 'Ничья'), drawReasonText('stalemate'));
         if (gameMode === 'online' && socket) {
           socket.emit('game_over', { gameId, result: 'draw', reason: 'stalemate' });
         }
@@ -553,10 +570,8 @@ const chessBoard = (() => {
       }, 100);
     } else if (status.status === 'draw') {
       setTimeout(() => {
-        showGameResult('Ничья', DRAW_REASON_RU[status.reason] || status.reason);
+        showGameResult(T('game.draw', 'Ничья'), drawReasonText(status.reason));
         // То же самое для 50 ходов / недостатка материала / троекратного
-        // повторения позиций — раньше ни один из этих исходов не сообщался
-        // серверу, партия никогда официально не завершалась.
         if (gameMode === 'online' && socket) {
           socket.emit('game_over', { gameId, result: 'draw', reason: status.reason });
         }
@@ -702,7 +717,9 @@ const chessBoard = (() => {
   // Реальное отображаемое время = сохранённое - (now - clockTickAt) для activeColor.
   let clockTickAt = null; // Date.now() в момент последнего tickClock() / syncClock
 
-  function startClock(wTime, bTime, tc) {
+  // opts.autoStart  — сразу запустить отсчёт (используется при реджойне в
+  //                   уже идущей партии, когда ходы на сервере есть).
+  function startClock(wTime, bTime, tc, opts) {
     const parsed = parseTC(tc || '10+0');
     whiteTime = wTime !== undefined ? wTime : parsed[0] * 60;
     blackTime = bTime !== undefined ? bTime : parsed[0] * 60;
@@ -711,20 +728,15 @@ const chessBoard = (() => {
     clockRunning = false;
     clockTickAt = null;
     clearInterval(clockInterval);
-    updateClockDisplay();
 
-    // Даём белым 10 сек на первый ход, потом запускаем таймер
-    // (только для новых игр — при реджойне ходы уже есть)
-    if (gameMode === 'online' && playerColor === 'w') {
-      setTimeout(() => {
-        // Запускаем только если белые ещё не сделали ход (history пустая)
-        if (!clockRunning && (state.history ? state.history.length : 0) === 0) {
-          clockRunning = true;
-          clockTickAt = Date.now();
-          clockInterval = setInterval(clockTick_interval, 100);
-        }
-      }, 10000);
+    if (opts && opts.autoStart) {
+      // Реджойн в уже идущую партию: серверный liveClock уже тикает —
+      // мгновенно включаем локальный отсчёт. Для НОВОЙ партии autoStart
+      clockRunning = true;
+      clockTickAt = Date.now();
+      clockInterval = setInterval(clockTick_interval, 100);
     }
+    updateClockDisplay();
   }
 
   function tickClock() {
@@ -741,7 +753,7 @@ const chessBoard = (() => {
 
     // Инкремент — добавляем тому, кто только что сходил
     if (clockRunning && tcIncrement > 0) {
-      if (justMoved === 'w') whiteTime = Math.min(whiteTime + tcIncrement, whiteTime + tcIncrement);
+      if (justMoved === 'w') whiteTime = whiteTime + tcIncrement;
       else blackTime += tcIncrement;
     }
 
@@ -778,12 +790,6 @@ const chessBoard = (() => {
       const loser = activeColor;
       if (loser === 'w') whiteTime = 0; else blackTime = 0;
       stopClock();
-      const winner = loser === 'w' ? 'Чёрные' : 'Белые';
-      showGameResult(`${winner} победили!`, 'Время вышло');
-      if (gameMode === 'online' && socket && gameId) {
-        const result = loser === 'w' ? 'black' : 'white';
-        socket.emit('game_over', { gameId, result, reason: 'timeout' });
-      }
     }
   }
 
@@ -810,8 +816,12 @@ const chessBoard = (() => {
   }
 
   function parseTC(tc) {
-    const parts = (tc || '10+0').split('+').map(Number);
-    return [parts[0] || 10, parts[1] || 0];
+    const [baseRaw, incRaw] = String(tc || '10+0').split('+');
+    let min;
+    if (/s$/i.test(baseRaw)) min = (parseFloat(baseRaw) || 15) / 60;
+    else min = parseFloat(baseRaw);
+    if (!isFinite(min) || min <= 0) min = 10;
+    return [min, parseInt(incRaw, 10) || 0];
   }
 
   function updateClockDisplay() {
@@ -835,16 +845,19 @@ const chessBoard = (() => {
     const myTurn = activeColor === playerColor;
 
     if (bottomEl) {
-      bottomEl.textContent = formatTime(myTime);
+      bottomEl.textContent = formatClock(myTime);
       bottomEl.className = 'player-clock' + (myTurn && clockRunning ? ' active' : '') + (myTime < 30 ? ' low' : '');
     }
     if (topEl) {
-      topEl.textContent = formatTime(theirTime);
+      topEl.textContent = formatClock(theirTime);
       topEl.className = 'player-clock' + (!myTurn && clockRunning ? ' active' : '') + (theirTime < 30 ? ' low' : '');
     }
   }
 
-  function formatTime(sec) {
+  // Форматирование ШАХМАТНЫХ ЧАСОВ (секунды → «m:ss»). Переименовано из
+  // formatTime (2Г): глобальный formatTime из /js/utils.js — про время
+  // сообщений (таймстамп → «ЧЧ:ММ»), это — про время партии на часах.
+  function formatClock(sec) {
     // Округляем вниз — время дробное (float) после точного отсчёта
     const totalSec = Math.max(0, Math.floor(sec));
     const m = Math.floor(totalSec / 60);
@@ -892,24 +905,24 @@ const chessBoard = (() => {
     const draw = data.result === 'draw';
     let reasonText = '';
     if (data.reason === 'resign') {
-      reasonText = win ? 'Соперник сдался' : 'Вы сдались';
+      reasonText = win ? T('game.opponent_resigned', 'Соперник сдался') : T('game.you_resigned', 'Вы сдались');
     } else if (data.reason === 'opponent_resign') {
-      reasonText = 'Соперник сдался';
+      reasonText = T('game.opponent_resigned', 'Соперник сдался');
     } else {
       const reasons = {
-        checkmate: 'Мат',
-        timeout:   'Время вышло',
-        agreement: 'По соглашению',
-        ...DRAW_REASON_RU,
+        checkmate: T('game.checkmate', 'Мат'),
+        timeout:   T('game.time_out', 'Время вышло'),
+        timeout_firstmove: T('game.time_out_first_move', 'Время на первый ход вышло'),
+        agreement: T('game.by_agreement', 'По соглашению'),
       };
-      reasonText = reasons[data.reason] || data.reason || '';
+      reasonText = reasons[data.reason] || drawReasonText(data.reason) || '';
     }
     const emoji = draw ? '🤝' : win ? '🏆' : '😔';
     const _tId   = _tournamentId;
     const _tName = _tournamentName;
     _tournamentId = null; _tournamentName = null;
     showGameResult(
-      emoji + ' ' + (draw ? 'Ничья' : win ? 'Победа!' : 'Поражение'),
+      emoji + ' ' + (draw ? T('game.draw', 'Ничья') : win ? T('game.victory', 'Победа!') : T('game.defeat', 'Поражение')),
       reasonText,
       _tId
     );
@@ -921,15 +934,6 @@ const chessBoard = (() => {
 
   // ─── INIT GAME ─────────────────────────────────────────────
   function resyncFromServer(data) {
-    // БАГ (исправлено, см. index.js:make_move): сервер раньше мог тихо
-    // отбросить ход (например, если по факту сейчас не ваш ход — из-за
-    // потерянного из-за короткого обрыва связи предыдущего сообщения),
-    // а клиент к этому моменту уже ПРИМЕНИЛ ход локально оптимистично
-    // (см. executeMove выше) — доска показывала ход, которого на сервере
-    // никогда не было, партия "зависала". Теперь сервер в таких случаях
-    // шлёт 'move_rejected' с полной актуальной историей ходов и временем,
-    // и мы полностью пересобираем локальную позицию с нуля по этим
-    // данным — откатывая всё, чего сервер не подтвердил.
     if (gameMode !== 'online') return;
     const wasViewingLive = viewingMove === -1;
     state = ChessEngine.parseFEN(ChessEngine.START_FEN);
@@ -1025,9 +1029,10 @@ const chessBoard = (() => {
       clockRunning = true;
       clockInterval = setInterval(clockTick_interval, 100);
     } else {
-      // Новая игра — стандартный старт
       const [min] = parseTC(data.timeControl || '10+0');
-      startClock(min * 60, min * 60, data.timeControl);
+      const startW = data.whiteTime !== undefined ? data.whiteTime : min * 60;
+      const startB = data.blackTime !== undefined ? data.blackTime : min * 60;
+      startClock(startW, startB, data.timeControl);
     }
 
     render();
@@ -1046,8 +1051,8 @@ const chessBoard = (() => {
     selectedSq = null; legalMovesCache = [];
     gameMode = 'local'; gameId = null; playerColor = 'w';
     isFlipped = false;
-    document.getElementById('player-bottom-name').textContent = 'Белые ♙';
-    document.getElementById('player-top-name').textContent = 'Чёрные ♟';
+    document.getElementById('player-bottom-name').textContent = T('game.player_white', 'Белые ♙');
+    document.getElementById('player-top-name').textContent = T('game.player_black', 'Чёрные ♟');
     startClock(600, 600, '10+0');
     render();
   }
@@ -1056,7 +1061,7 @@ const chessBoard = (() => {
 
   function resign() {
     if (!gameId || gameMode !== 'online') return;
-    if (!confirm('Сдаться?')) return;
+    if (!confirm(T('game.resign_confirm', 'Сдаться?'))) return;
     socket.emit('resign', { gameId });
     stopClock();
   }
@@ -1064,7 +1069,7 @@ const chessBoard = (() => {
   function offerDraw() {
     if (!gameId || gameMode !== 'online') return;
     socket.emit('offer_draw', { gameId });
-    toast('Предложение ничьей отправлено', 'info');
+    toast(T('game.draw_offered_toast', 'Предложение ничьей отправлено'), 'info');
   }
 
   function clearChatMessages() {
@@ -1122,6 +1127,7 @@ const chessBoard = (() => {
     gameMode = 'analysis'; gameId = null; playerColor = 'w';
     isFlipped = false;
     stopClock();
+    if (typeof AICommentator !== 'undefined') AICommentator.reset();
     render();
     if (typeof requestAnalysis === 'function') requestAnalysis();
   }
@@ -1132,20 +1138,24 @@ const chessBoard = (() => {
       historyStates = [ChessEngine.deepClone(state)];
       viewingMove = -1; lastMove = null;
       selectedSq = null; legalMovesCache = [];
+      // Позиция сменилась вручную — прошлая оценка ни к чему не привязана
+      if (typeof AICommentator !== 'undefined') AICommentator.reset();
       render();
       if (gameMode === 'analysis' && typeof requestAnalysis === 'function') requestAnalysis();
     } catch (e) { toast('Неверный FEN', 'error'); }
   }
 
-  // Загружает партию по массиву ходов (для анализа из профиля)
+  // Загружает партию по массиву ходов (для анализа из профиля/модалки результата)
   function loadGameMoves(moves) {
     state = ChessEngine.parseFEN(ChessEngine.START_FEN);
     historyStates = [ChessEngine.deepClone(state)];
     viewingMove = -1; lastMove = null;
     selectedSq = null; legalMovesCache = [];
     gameMode = 'analysis';
+    gameId = null; // режим анализа всегда локальный (иначе pages['game'] не пересоздаст партию)
     isFlipped = false;
     stopClock();
+    if (typeof AICommentator !== 'undefined') AICommentator.reset();
 
     for (const move of moves) {
       try {

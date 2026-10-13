@@ -3,163 +3,98 @@
 // ═══════════════════════════════════════════════════════════════
 // Здесь только регистрация путей: app.get/post/put/delete/all(...).
 // Вся логика, состояние и хелперы — в core.js, сюда просто
-// подключаем то же самое общее окружение и используем как раньше.
-//
-// Файл выполняется один раз при старте (require из index.js) и
-// навешивает все обработчики на общий app.
-// ═══════════════════════════════════════════════════════════════
 
 const {
-  express,
-  http,
-  Server,
-  compression,
   bcrypt,
   jwt,
   uuidv4,
   path,
   fs,
-  cors,
-  Pool,
-  multer,
   pool,
   db,
   withTransaction,
-  Resend,
-  pendingPasswordChanges,
-  pendingDeletions,
-  pendingLogins,
-  TWO_FA_RESEND_COOLDOWN_MS,
-  twoFactorLastSent,
-  sendPasswordChangeEmail,
-  sendTwoFactorLoginEmail,
-  sendDeleteAccountEmail,
-  BAD_NICK_WORDS,
-  normNick,
+  getCurrentSeasonDay,
   nickHasBadWord,
   PROFILE_EMOJIS,
   normForSimilarity,
   app,
-  parseCookieHeader,
-  isProd,
   AUTH_COOKIE_OPTS,
-  DEVICE_COOKIE_OPTS,
   getAuthToken,
-  RateLimiter,
-  limiterGeneral,
   limiterAuth,
   limiterStrict,
-  socketLimiter,
   limiterRegStrict,
-  STORM_DURATION_MS,
   STORM_MAX_TIME_MS,
   STORM_MIN_MS_PER_PUZZLE,
   stormRuns,
   bannedIPs,
   bannedDevices,
-  loadBansFromDB,
   saveBanToDB,
   removeBanFromDB,
   usersCache,
   cacheUser,
   rowToUser,
   isVip,
-  isVipGranter,
   USER_BADGES,
   getUserBadges,
   getUser,
   saveUser,
   globalChat,
-  loadChat,
-  saveChatMsg,
-  deleteChatMsg,
   tournaments,
-  loadTournaments,
   saveTournament,
-  deleteTournamentFromDB,
   clubs,
-  loadClubs,
   saveClub,
   deleteClubFromDB,
   CLUB_CHAT_MAX,
-  clubChats,
-  clubChatBans,
   getClubChat,
   getClubChatBans,
-  initClubChatTable,
-  loadClubChats,
   saveClubChatMsg,
   deleteClubChatMsgsByUser,
   isSiteAdmin,
   isClubModerator,
   canManageTournament,
   MAX_INTERCLUB_TEAMS,
-  extractClubIdFromLink,
   resolveInterclubTeams,
   requireTournamentManager,
   canWriteInClubChat,
   TOURNAMENT_CHAT_MAX,
-  TOURNAMENT_CHAT_READONLY_AFTER_MS,
-  tournamentChats,
-  tournamentChatMutes,
   getTournamentChat,
   getTournamentChatMutes,
   isTournamentChatOpen,
   canModerateTournamentChat,
-  initTournamentChatTable,
-  loadTournamentChats,
   saveTournamentChatMsg,
   wipeTournamentChatMsgsByUser,
   forumThreads,
   forumReplies,
-  loadForum,
   saveForumThread,
   deleteForumThread,
   saveForumReply,
   deleteForumReply,
   blogPosts,
-  loadBlog,
   saveBlogPost,
-  deleteBlogPost,
   newsPosts,
-  loadNews,
   saveNewsPost,
-  deleteNewsPost,
   newsAuthors,
-  loadNewsAuthors,
-  server,
   io,
-  PORT,
   JWT_SECRET,
   RESERVED,
   SYSTEM_SENDER,
   isSystemSender,
   sessions,
-  usernameToSocketId,
   onlineUsers,
   pendingChallenges,
   activeGames,
   tournamentGames,
   workers,
-  analyzeJobs,
-  pickIdleWorker,
   ipBanMiddleware,
   getIP,
   isLocalIP,
-  vpnCheckCache,
-  VPN_CACHE_TTL,
   isVpnOrProxy,
   rateLimit,
-  BUILD_VERSION,
-  JS_SRC_RE,
   sendVersionedHtml,
   LICHESS_TOKEN,
-  YUKASSA_SHOP_ID,
-  YUKASSA_SECRET_KEY,
-  SITE_URL,
-  initDonateTable,
   loginFailStreaks,
   getLoginFailStreak,
+  getUsernameLockUntil,
   bumpLoginFailStreak,
   clearLoginFailStreak,
   limiterQuests,
@@ -176,10 +111,9 @@ const {
   logAdminAction,
   countTodayByUser,
   makeSlug,
-  forumViewSessions,
+  trackForumView,
   handleUnfollow,
   blogAuthMiddleware,
-  blogAdminMiddleware,
   isBlogAdmin,
   decodeBlogField,
   blogSanitize,
@@ -195,17 +129,12 @@ const {
   handleDeleteNewsPost,
   getNewsCommentMute,
   handleDeleteNewsComment,
-  UPLOADS_DIR,
-  uploadStorage,
   uploadImage,
   handleEditClub,
   handleDeleteClub,
-  initPuzzleTables,
-  initDurkaTables,
   durkaKeyMiddleware,
   parsePuzzleSolution,
   handleDeletePuzzle,
-  SPA_ROUTES,
   handleDeleteDevDiaryEntry,
   handleDeleteDevDiaryComment,
   authMiddleware,
@@ -218,28 +147,101 @@ const {
   sanitizeTournament,
   getTournamentStatus,
   verifyToken,
-  liveClock,
-  hasFullMove,
-  endGameAuthoritative,
   findSocketByUsername,
   emitToAdmins,
-  recordGame,
-  updateStats,
-  REMATCH_GRACE_PERIOD,
   tryPairTournamentPlayers,
-  FIRST_MOVE_TIMEOUT,
-  startTournamentGame,
   finishTournamentGame,
-  ANTICHEAT_THRESHOLD,
-  ANTICHEAT_STREAK_BAN,
-  checkAnticheat,
   anticheatBan,
-  startGame,
-  serverChess,
-  limiterSocketConnect,
-  main,
 } = require('./core');
 
+// ── Удалённые аккаунты ────────────────────────────────────────
+// Ник удалённого аккаунта навсегда занят (проверка в /api/register), а сам
+// аккаунт продолжает учитываться в общей статистике.
+db(`CREATE TABLE IF NOT EXISTS deleted_usernames (username_low TEXT PRIMARY KEY, deleted_at BIGINT NOT NULL)`).catch(() => {});
+async function countDeletedUsers() {
+  try { return parseInt((await db('SELECT COUNT(*) FROM deleted_usernames')).rows[0].count) || 0; }
+  catch { return 0; }
+}
+async function getDeletedUser(usernameLow) {
+  try {
+    const r = await db('SELECT deleted_at FROM deleted_usernames WHERE username_low = $1', [usernameLow]);
+    return r.rows[0] ? { deletedAt: Number(r.rows[0].deleted_at) } : null;
+  } catch { return null; }
+}
+
+// ── Владельцы сайта ───────────────────────────────────────────
+// Только они могут выдавать/снимать роль админа и читать переписки.
+const SITE_OWNERS = ['chesshome', 'marina64'];
+const isSiteOwner = (u) => !!u && SITE_OWNERS.includes(String(u.username || '').toLowerCase());
+function requireOwner(req, res, next) {
+  if (!isSiteOwner(req.user)) return res.status(403).json({ error: 'Доступно только владельцам сайта' });
+  return next();
+}
+const moderation = require('./moderation');
+const twins = require('./twins');   // оценка «один человек» по сигналам устройства/сети
+require('./botmoderator');
+const puzzleService = require('./services/puzzle.service'); // задачи: проверка ходов + рейтинг Glicko-2
+puzzleService.ensureSchema().catch(() => {});              // колонки рейтинга создаются при старте (идемпотентно)
+
+// Единая серверная реализация экранирования HTML — в server/utils.js
+// (используется в server-side рендере страницы партии /game/:gameId).
+const { escapeHtml } = require('./utils');
+
+const crypto = require('crypto');
+
+
+// ── Async-изоляция роутов (D6) ────────────────────────────────
+// Express 4 НЕ ловит rejected-промисы в async-хендлерах: любой throw/отказ
+// в ~40 async-роутах оставлял запрос висеть навсегда и создавал
+// unhandledRejection (в Node >= 15 — падение процесса). Вместо ручных
+// try/catch в каждом роуте — оборачиваем все регистрируемые хендлеры
+// разово: app.get/post/patch/delete/put вызываются через обёртку, которая
+// транслирует ошибки в next(err), а финальный error-хендлер в конце файла
+// отвечает клиенту 500.
+const HTTP_METHODS = ['get', 'post', 'put', 'patch', 'delete', 'all'];
+for (const method of HTTP_METHODS) {
+  const original = app[method].bind(app);
+  app[method] = function (routePath, ...handlers) {
+    const wrapped = handlers.map(h => {
+      if (typeof h !== 'function') return h;
+      // Пропускаем express-промежуточные слои с 4+ аргументами (error-хендлеры)
+      if (h.length >= 4) return h;
+      return function (req, res, next) {
+        try {
+          const r = h(req, res, next);
+          if (r && typeof r.catch === 'function') r.catch(next);
+          return r;
+        } catch (e) { next(e); }
+      };
+    });
+    return original(routePath, ...wrapped);
+  };
+}
+
+
+// ── Общие хелперы валидации (DRY) ─────────────────────────────
+function parsePagination(query, { defaultLimit = 20, maxLimit = 100 } = {}) {
+  let limit = parseInt(query.limit, 10);
+  if (!Number.isFinite(limit) || limit < 1) limit = defaultLimit;
+  if (limit > maxLimit) limit = maxLimit;
+  let offset = parseInt(query.offset, 10);
+  if (!Number.isFinite(offset) || offset < 0) offset = 0;
+  let page = parseInt(query.page, 10);
+  if (!Number.isFinite(page) || page < 1) page = 1;
+  return { limit, offset, page };
+}
+
+// Контроль времени «10+0», «3+2», «60+0s» — единая проверка для турниров
+const TIME_CONTROL_RE = /^\d{1,3}(\.\d)?\+\d{1,2}(s)?$/;
+function parseTimeControl(tc) {
+  if (typeof tc !== 'string' || !TIME_CONTROL_RE.test(tc)) return null;
+  const [base, inc] = tc.split('+');
+  const seconds = base.endsWith('s') ? (parseInt(base, 10) || 15) : (parseFloat(base) || 10) * 60;
+  return { raw: tc, baseSeconds: Math.min(seconds, 3 * 3600), increment: parseInt(inc, 10) || 0 };
+}
+
+// Кэш «задачи дня» (см. GET /api/puzzles/daily): пересчёт раз в сутки.
+let dailyPuzzleCache = { day: -1, payload: null };
 
 
 // Корень "/" отдаём тем же путём (версия + no-store), а не через
@@ -265,12 +267,12 @@ app.get('/api/opening-explorer', async (req, res) => {
 });
 
 
-app.get('/engine-play', (req, res) => res.sendFile(path.join(__dirname, '../public/engine-play.html')));
-
 app.get('/opening-database', (req, res) => res.sendFile(path.join(__dirname, '../public/opening-database.html')));
 
 
 app.get('/blog',    (req, res) => res.sendFile(path.join(__dirname, '../public/blog.html')));
+app.get('/vs-computer',    (req, res) => res.sendFile(path.join(__dirname, '../public/vs-computer.html')));
+
 
 app.get('/blog/:id',(req, res) => {
   const post = blogPosts.find(p => p.id === req.params.id);
@@ -298,114 +300,26 @@ app.get('/news/:id/comments', (req, res) => {
 
 app.get('/followers/:username', (req, res) => res.sendFile(path.join(__dirname, '../public/followers.html')));
 
-app.get('/following/:username', (req, res) => res.sendFile(path.join(__dirname, '../public/following.html')));
+// 4.3: /following/:username отдаёт тот же followers.html — страница умеет
+app.get('/following/:username', (req, res) => res.sendFile(path.join(__dirname, '../public/followers.html')));
 
 
 app.get('/dev-diary', (req, res) => res.sendFile(path.join(__dirname, '../public/dev-diary.html')));
-
-app.get('/donate',   (req, res) => res.sendFile(path.join(__dirname, '../public/donate.html')));
 
 app.get('/durka',    (req, res) => res.sendFile(path.join(__dirname, '../public/durka.html')));
 
 app.get('/ai', (req, res) => res.sendFile(path.join(__dirname, '../public/ai.html')));
 
-
-// Создать платёж через ЮKassa
-app.post('/api/donate/create', rateLimit(limiterStrict), async (req, res) => {
-  try {
-    const { amount, message, username } = req.body;
-    const amountNum = parseFloat(amount);
-    if (!amountNum || amountNum < 10 || amountNum > 100000)
-      return res.status(400).json({ error: 'Сумма должна быть от 10 до 100 000 ₽' });
-
-    const donateId = uuidv4();
-    const idempotenceKey = uuidv4();
-
-    const payload = {
-      amount:       { value: amountNum.toFixed(2), currency: 'RUB' },
-      confirmation: { type: 'redirect', return_url: `${SITE_URL}/donate?success=1&id=${donateId}` },
-      capture:      true,
-      description:  message ? `Донат Chess Home: ${message.slice(0, 100)}` : 'Донат Chess Home',
-      metadata:     { donate_id: donateId, username: username || 'anonymous' },
-    };
-
-    const auth = Buffer.from(`${YUKASSA_SHOP_ID}:${YUKASSA_SECRET_KEY}`).toString('base64');
-    const ykRes = await fetch('https://api.yookassa.ru/v3/payments', {
-      method: 'POST',
-      headers: {
-        'Authorization':  `Basic ${auth}`,
-        'Content-Type':   'application/json',
-        'Idempotence-Key': idempotenceKey,
-      },
-      body: JSON.stringify(payload),
-    });
-    const ykData = await ykRes.json();
-    if (!ykRes.ok) {
-      console.error('[Donate] ЮKassa error:', ykData);
-      return res.status(502).json({ error: 'Ошибка платёжного сервиса. Попробуйте позже.' });
-    }
-
-    // Сохраняем в БД
-    await db(
-      'INSERT INTO donations (id, username, amount, currency, message, status, payment_id, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)',
-      [donateId, username || null, amountNum, 'RUB', message || null, 'pending', ykData.id, Date.now()]
-    );
-
-    res.json({ confirmation_url: ykData.confirmation.confirmation_url, donate_id: donateId });
-  } catch (e) {
-    console.error('[Donate] create error:', e.message);
-    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
-  }
+['privacy','terms','about','admin','tournaments','tournament','admin-tournament','report'].forEach(p => {
+  app.get('/' + p, (req, res) => res.sendFile(path.join(__dirname, '../public/' + p + '.html')));
 });
 
-
-// Webhook от ЮKassa — подтверждение оплаты
-app.post('/api/donate/webhook', express.json({ type: '*/*' }), async (req, res) => {
-  try {
-    const { event, object } = req.body;
-    if (event === 'payment.succeeded' && object?.metadata?.donate_id) {
-      await db(
-        'UPDATE donations SET status=$1 WHERE id=$2',
-        ['succeeded', object.metadata.donate_id]
-      );
-      console.log(`[Donate] ✅ Платёж успешен: ${object.metadata.donate_id} (${object.amount?.value} ₽)`);
-    }
-    res.sendStatus(200);
-  } catch (e) {
-    console.error('[Donate] webhook error:', e.message);
-    res.sendStatus(500);
-  }
-});
+// SPA-маршруты (клиентский роутер в index.html) — из core.js.
+const SPA_ROUTES = ['/lobby', '/analysis', '/editor', '/leaderboard'];
+SPA_ROUTES.forEach(r => { app.get(r, (req, res) => res.sendFile(path.join(__dirname, '../public/index.html'))); });
 
 
-// Топ донатёров (публичный)
-app.get('/api/donate/top', async (req, res) => {
-  try {
-    const r = await db(`
-      SELECT username, SUM(amount) AS total
-      FROM donations
-      WHERE status = 'succeeded' AND username IS NOT NULL
-      GROUP BY username
-      ORDER BY total DESC
-      LIMIT 10
-    `);
-    res.json(r.rows);
-  } catch (e) {
-    res.json([]);
-  }
-});
-
-
-// Проверка статуса конкретного доната (для страницы успеха)
-app.get('/api/donate/status/:id', async (req, res) => {
-  try {
-    const r = await db('SELECT status, amount, username, message FROM donations WHERE id=$1', [req.params.id]);
-    if (!r.rows[0]) return res.status(404).json({ error: 'Не найдено' });
-    res.json(r.rows[0]);
-  } catch (e) {
-    res.status(500).json({ error: 'Ошибка' });
-  }
-});
+// ══════════════════════════════════════════════════════════════
 
 // ══════════════════════════════════════════════════════════════
 //  AUTH & USER API
@@ -447,12 +361,14 @@ app.post('/api/register',
       const deletedCheck = await db('SELECT username_low FROM deleted_usernames WHERE username_low = $1', [username.toLowerCase()]);
       if (deletedCheck.rows.length > 0) return res.status(400).json({ error: 'Этот ник недоступен для регистрации' });
 
-      const allUsers = await db('SELECT username FROM users');
       const normNew = normForSimilarity(username);
-      for (const row of allUsers.rows) {
-        if (normForSimilarity(row.username) === normNew)
-          return res.status(400).json({ error: 'Ник слишком похож на уже существующий' });
-      }
+      const clash = await db(
+        `SELECT username FROM users
+          WHERE translate(regexp_replace(username_low, '[-_.]', '', 'g'), 'іаеорсхв013', 'iaepcxboie') = $1
+          LIMIT 1`,
+        [normNew]
+      );
+      if (clash.rows.length > 0) return res.status(400).json({ error: 'Ник слишком похож на уже существующий' });
 
       if (!isLocalIP(ip)) {
         const ipCount = await db('SELECT COUNT(*) FROM users WHERE created_from_ip = $1', [ip]);
@@ -479,6 +395,7 @@ app.post('/api/register',
       // VPN/прокси-фильтр, лимит аккаунтов на IP и на устройство,
       // а также проверка на похожие ники.
       await saveUser(userData);
+      twins.recordLogin(userData.username, ip, deviceId);   // не блокирует, ошибки глотает
 
       const token = jwt.sign({ userId: userData.id, username: userData.username }, JWT_SECRET, { expiresIn: '7d' });
       // Токен больше не возвращается в теле ответа — только в HttpOnly cookie,
@@ -493,25 +410,38 @@ app.post('/api/register',
 );
 
 
-app.post('/api/login', 
+app.post('/api/login',
   rateLimit(limiterAuth, 'Слишком много попыток входа с вашего IP. Подождите минуту.'),
   ipBanMiddleware,
-  async (req, res, next) => {
-    // Капча отключена по запросу (была нестабильна).
-    next();
-  },
   async (req, res) => {
   try {
     const { username, password } = req.body;
-    const usernameLow = (username || '').toLowerCase();
+    const usernameLow = (username || '').toLowerCase().trim();
+    if (!usernameLow || typeof password !== 'string') return res.status(400).json({ error: 'Укажите имя и пароль' });
+
+    const loginIP = getIP(req);
+    const streak = getLoginFailStreak(usernameLow, loginIP);
+    if (streak >= 5) {
+      const waitMin = Math.ceil((loginFailStreaks.get(usernameLow + '|' + loginIP).resetAt - Date.now()) / 60000);
+      return res.status(429).json({ error: `Слишком много неудачных попыток. Попробуйте через ${Math.max(waitMin, 1)} мин.` });
+    }
+    // Анти-распределённый брутфорс: суммарно 30 неудач с разных IP за 15 минут
+    // лочат ник целиком (bcrypt делает такой перебор бессмысленным).
+    const lockUntil = getUsernameLockUntil(usernameLow);
+    if (lockUntil > Date.now()) {
+      const waitMin = Math.ceil((lockUntil - Date.now()) / 60000);
+      return res.status(429).json({ error: `Аккаунт временно защищён: слишком много неудачных попыток входа. Попробуйте через ${Math.max(waitMin, 1)} мин.` });
+    }
+
     const user = await getUser(usernameLow);
-    if (!user) { bumpLoginFailStreak(usernameLow); return res.status(401).json({ error: 'Неверное имя или пароль' }); }
+    if (!user) { bumpLoginFailStreak(usernameLow, loginIP); return res.status(401).json({ error: 'Неверное имя или пароль' }); }
     if (user.banned) return res.status(403).json({ error: `Заблокирован: ${user.banReason || ''}` });
     if (!await bcrypt.compare(password, user.passwordHash)) {
-      bumpLoginFailStreak(usernameLow);
+      bumpLoginFailStreak(usernameLow, loginIP);
       return res.status(401).json({ error: 'Неверное имя или пароль' });
     }
-    clearLoginFailStreak(usernameLow);
+    clearLoginFailStreak(usernameLow, loginIP);
+    twins.recordLogin(user.username, loginIP, req.deviceId);
 
     const token = jwt.sign({ userId: user.id, username: user.username }, JWT_SECRET, { expiresIn: '7d' });
     res.cookie('ch_token', token, AUTH_COOKIE_OPTS);
@@ -521,32 +451,6 @@ app.post('/api/login',
     res.status(500).json({ error: 'Внутренняя ошибка сервера при входе. Попробуйте ещё раз.' });
   }
 });
-
-
-app.post('/api/login/verify-2fa',
-  rateLimit(limiterAuth, 'Слишком много попыток. Подождите минуту.'),
-  ipBanMiddleware,
-  async (req, res) => {
-    const { code } = req.body;
-    if (!code) return res.status(400).json({ error: 'Введите код' });
-
-    const pending = pendingLogins.get(String(code));
-    if (!pending) return res.status(400).json({ error: 'Неверный или истёкший код' });
-    if (Date.now() > pending.expiresAt) {
-      pendingLogins.delete(String(code));
-      return res.status(400).json({ error: 'Код истёк. Войдите заново.' });
-    }
-
-    const user = await getUser(pending.username.toLowerCase());
-    pendingLogins.delete(String(code));
-    if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
-    if (user.banned) return res.status(403).json({ error: `Заблокирован: ${user.banReason || ''}` });
-
-    const token = jwt.sign({ userId: user.id, username: user.username }, JWT_SECRET, { expiresIn: '7d' });
-    res.cookie('ch_token', token, AUTH_COOKIE_OPTS);
-    res.json({ user: sanitizeUser(user, true) });
-  }
-);
 
 
 app.post('/api/logout', (req, res) => {
@@ -566,138 +470,66 @@ app.get('/api/users/search', async (req, res) => {
 app.get('/api/me', authMiddleware, async (req, res) => {
   const me = await getUser(req.user.username.toLowerCase());
   if (!me) return res.status(401).json({ error: 'Не найден' });
-  // twoFactorEnabled — это настройка безопасности самого пользователя,
-  // не публичный профиль, поэтому её нет в sanitizeUser (используется и для чужих профилей).
-  res.json({ ...sanitizeUser(me, true), twoFactorEnabled: !!me.twoFactorEnabled });
+  res.json(sanitizeUser(me, true));
 });
 
 
-app.post('/api/account/2fa/toggle', authMiddleware, rateLimit(limiterStrict, 'Слишком много запросов. Попробуйте позже.'), async (req, res) => {
-  const { enabled } = req.body;
-  const user = await getUser(req.user.username.toLowerCase());
-  if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
-  if (enabled && !user.email) return res.status(400).json({ error: 'Для 2FA нужен привязанный email' });
-
-  user.twoFactorEnabled = !!enabled;
-  await db('UPDATE users SET two_factor_enabled=$1 WHERE id=$2', [user.twoFactorEnabled, user.id]);
-  cacheUser(user);
-  res.json({ ok: true, twoFactorEnabled: user.twoFactorEnabled });
-});
-
-
-app.post('/api/account/request-password-change', authMiddleware, rateLimit(limiterStrict, 'Слишком много запросов. Попробуйте позже.'), async (req, res) => {
-  const { newPassword } = req.body;
-  if (!newPassword || newPassword.length < 6)
-    return res.status(400).json({ error: 'Новый пароль минимум 6 символов' });
-
-  const user = await getUser(req.user.username.toLowerCase());
-  if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
-  if (!user.email) return res.status(400).json({ error: 'Email не привязан к аккаунту' });
-
-  const code = String(Math.floor(100000 + Math.random() * 900000));
-  const newHash = await bcrypt.hash(newPassword, 10);
-
-  for (const [k, v] of pendingPasswordChanges.entries()) {
-    if (v.username === user.username) pendingPasswordChanges.delete(k);
-  }
-
-  pendingPasswordChanges.set(code, {
-    username: user.username,
-    newHash,
-    expiresAt: Date.now() + 15 * 60 * 1000,
-  });
-
+// ── Смена пароля ─────────────────────────────────────────────
+// Нужен текущий пароль. Неверные попытки считаются тем же счётчиком, что и
+// при входе (после 5 неудач подряд — временная блокировка).
+app.post('/api/account/password', authMiddleware, rateLimit(limiterAuth, 'Слишком много попыток. Подождите минуту.'), async (req, res) => {
   try {
-    await Promise.race([
-      sendPasswordChangeEmail(user.email, code),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 15000))
-    ]);
-    res.json({ ok: true, message: 'Код подтверждения отправлен на ' + user.email });
+    const { currentPassword, newPassword } = req.body || {};
+    if (typeof currentPassword !== 'string' || typeof newPassword !== 'string' || !currentPassword || !newPassword)
+      return res.status(400).json({ error: 'Заполните все поля' });
+    if (newPassword.length < 6)
+      return res.status(400).json({ error: 'Пароль минимум 6 символов' });
+    if (Buffer.byteLength(newPassword, 'utf8') > 72)
+      return res.status(400).json({ error: 'Пароль слишком длинный (максимум 72 байта)' });
+    if (newPassword === currentPassword)
+      return res.status(400).json({ error: 'Новый пароль совпадает с текущим' });
+
+    const user = await getUser(req.user.username.toLowerCase());
+    if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
+
+    const key = user.username.toLowerCase();
+    const ip  = getIP(req);
+    if (getLoginFailStreak(key, ip) >= 5)
+      return res.status(429).json({ error: 'Слишком много неудачных попыток. Попробуйте через несколько минут.' });
+    if (!await bcrypt.compare(currentPassword, user.passwordHash)) {
+      bumpLoginFailStreak(key, ip);
+      return res.status(401).json({ error: 'Неверный текущий пароль' });
+    }
+    clearLoginFailStreak(key, ip);
+
+    user.passwordHash = await bcrypt.hash(newPassword, 10);
+    await saveUser(user);
+
+    // Обновляем cookie текущей сессии (новый срок 7 дней)
+    const token = jwt.sign({ userId: user.id, username: user.username }, JWT_SECRET, { expiresIn: '7d' });
+    res.cookie('ch_token', token, AUTH_COOKIE_OPTS);
+    console.log(`[Account] ${user.username} сменил пароль`);
+    res.json({ ok: true });
   } catch (err) {
-    console.error('[PasswordChange]', err.message);
-    pendingPasswordChanges.delete(code);
-    res.status(500).json({ error: 'Не удалось отправить письмо: ' + err.message });
+    console.error('[ChangePassword]', err.message);
+    res.status(500).json({ error: 'Не удалось сменить пароль. Попробуйте ещё раз.' });
   }
 });
 
 
-app.post('/api/account/confirm-password-change', authMiddleware, rateLimit(limiterAuth, 'Слишком много попыток.'), async (req, res) => {
-  const { code } = req.body;
-  if (!code) return res.status(400).json({ error: 'Введите код' });
-
-  const pending = pendingPasswordChanges.get(String(code));
-  if (!pending) return res.status(400).json({ error: 'Неверный или истёкший код' });
-  if (Date.now() > pending.expiresAt) {
-    pendingPasswordChanges.delete(String(code));
-    return res.status(400).json({ error: 'Код истёк. Запросите новый.' });
+// ── Удаление аккаунта ────────────────────────────────────────
+app.post('/api/account/delete', authMiddleware, rateLimit(limiterAuth, 'Слишком много попыток.'), async (req, res) => {
+  const { password } = req.body;
+  if (typeof password !== 'string' || !password) {
+    return res.status(400).json({ error: 'Укажите пароль для подтверждения' });
   }
-  if (pending.username !== req.user.username)
-    return res.status(403).json({ error: 'Код не принадлежит этому аккаунту' });
-
-  const user = await getUser(req.user.username.toLowerCase());
-  if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
-
-  user.passwordHash = pending.newHash;
-  await db('UPDATE users SET password_hash=$1 WHERE id=$2', [user.passwordHash, user.id]);
-  cacheUser(user);
-  pendingPasswordChanges.delete(String(code));
-
-  const sock = findSocketByUsername(user.username);
-  if (sock) { sock.emit('session_expired', 'Пароль изменён'); sock.disconnect(); }
-
-  res.json({ ok: true, message: 'Пароль успешно изменён' });
-});
-
-
-app.post('/api/account/request-delete', authMiddleware, rateLimit(limiterStrict, 'Слишком много запросов.'), async (req, res) => {
-  const user = await getUser(req.user.username.toLowerCase());
-  if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
-  if (user.role === 'admin') return res.status(403).json({ error: 'Нельзя удалить аккаунт администратора' });
-  if (!user.email) return res.status(400).json({ error: 'Email не привязан к аккаунту' });
-
-  const code = String(Math.floor(100000 + Math.random() * 900000));
-
-  for (const [k, v] of pendingDeletions.entries()) {
-    if (v.username === user.username) pendingDeletions.delete(k);
-  }
-
-  pendingDeletions.set(code, {
-    username: user.username,
-    expiresAt: Date.now() + 15 * 60 * 1000,
-  });
-
-  try {
-    await Promise.race([
-      sendDeleteAccountEmail(user.email, user.username, code),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 15000))
-    ]);
-    res.json({ ok: true, message: 'Код подтверждения отправлен на ' + user.email });
-  } catch (err) {
-    console.error('[DeleteAccount]', err.message);
-    pendingDeletions.delete(code);
-    res.status(500).json({ error: 'Не удалось отправить письмо: ' + err.message });
-  }
-});
-
-
-app.post('/api/account/confirm-delete', authMiddleware, rateLimit(limiterAuth, 'Слишком много попыток.'), async (req, res) => {
-  const { code } = req.body;
-  if (!code) return res.status(400).json({ error: 'Введите код' });
-
-  const pending = pendingDeletions.get(String(code));
-  if (!pending) return res.status(400).json({ error: 'Неверный или истёкший код' });
-  if (Date.now() > pending.expiresAt) {
-    pendingDeletions.delete(String(code));
-    return res.status(400).json({ error: 'Код истёк. Запросите новый.' });
-  }
-  if (pending.username !== req.user.username)
-    return res.status(403).json({ error: 'Код не принадлежит этому аккаунту' });
 
   const user = await getUser(req.user.username.toLowerCase());
   if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
   if (user.role === 'admin') return res.status(403).json({ error: 'Нельзя удалить аккаунт администратора' });
-
-  pendingDeletions.delete(String(code));
+  if (!await bcrypt.compare(password, user.passwordHash)) {
+    return res.status(401).json({ error: 'Неверный пароль' });
+  }
 
   try {
     await db(`
@@ -707,8 +539,41 @@ app.post('/api/account/confirm-delete', authMiddleware, rateLimit(limiterAuth, '
       )
     `);
     await db('INSERT INTO deleted_usernames (username_low, deleted_at) VALUES ($1, $2) ON CONFLICT DO NOTHING', [user.username.toLowerCase(), Date.now()]);
+    await twins.forgetUser(user.username);   // удаляем признаки устройства удалённого аккаунта (privacy.html, 2.4)
 
-    await db('DELETE FROM users WHERE id = $1', [user.id]);
+    await withTransaction(async (client) => {
+      const tableExists = async (name) => {
+        const r = await client.query('SELECT to_regclass($1) AS t', [`public.${name}`]);
+        return !!r.rows[0]?.t;
+      };
+      await client.query('DELETE FROM users WHERE id = $1', [user.id]);
+      if (await tableExists('dm_messages')) {
+        await client.query('DELETE FROM dm_messages WHERE from_user = $1 OR to_user = $1', [user.username]);
+      }
+      if (await tableExists('dm_blocks')) {
+        await client.query('DELETE FROM dm_blocks WHERE blocker = $1 OR blocked = $1', [user.username]);
+      }
+      if (await tableExists('follows')) {
+        await client.query('DELETE FROM follows WHERE follower = $1 OR following = $1', [user.username]);
+      }
+      if (await tableExists('puzzle_attempts')) {
+        // Колонки username в puzzle_attempts нет (только user_id) — старый
+        // код с "WHERE username" абортит транзакцию после первого же запуска.
+        await client.query('DELETE FROM puzzle_attempts WHERE user_id = $1', [user.id]);
+      }
+      if (await tableExists('reports')) {
+        await client.query('DELETE FROM reports WHERE reporter = $1', [user.username]);
+      }
+      if (await tableExists('appeals')) {
+        await client.query('DELETE FROM appeals WHERE username = $1', [user.username]);
+      }
+      if (await tableExists('club_members')) {
+        await client.query('DELETE FROM club_members WHERE username = $1', [user.username]);
+      }
+    });
+
+    // Чат-история — вне транзакции (функции core, у них свои запросы)
+    await removeUserChatMessages(user.username).catch(() => {});
     usersCache.delete(user.username.toLowerCase());
 
     const sock = findSocketByUsername(user.username);
@@ -717,7 +582,7 @@ app.post('/api/account/confirm-delete', authMiddleware, rateLimit(limiterAuth, '
     console.log(`[DeleteAccount] Аккаунт удалён: ${user.username}`);
     res.json({ ok: true, message: 'Аккаунт удалён' });
   } catch (err) {
-    console.error('[DeleteAccount confirm]', err.message);
+    console.error('[DeleteAccount]', err.message);
     res.status(500).json({ error: 'Ошибка при удалении: ' + err.message });
   }
 });
@@ -725,7 +590,11 @@ app.post('/api/account/confirm-delete', authMiddleware, rateLimit(limiterAuth, '
 
 app.get('/api/users/:username', async (req, res) => {
   const user = await getUser(req.params.username.toLowerCase());
-  if (!user) return res.status(404).json({ error: 'Не найден' });
+  if (!user) {
+    const gone = await getDeletedUser(req.params.username.toLowerCase());
+    if (gone) return res.status(404).json({ error: 'Аккаунт удалён', deleted: true, deletedAt: gone.deletedAt });
+    return res.status(404).json({ error: 'Не найден' });
+  }
   const payload = verifyToken(getAuthToken(req));
   const isSelf = payload && payload.username && payload.username.toLowerCase() === user.username.toLowerCase();
   const data = isSelf ? { ...sanitizeUser(user, true), email: user.email || null } : sanitizeUser(user, false);
@@ -735,7 +604,8 @@ app.get('/api/users/:username', async (req, res) => {
 
 app.get('/api/users/:username/games', async (req, res) => {
   const u = req.params.username;
-  const limit = parseInt(req.query.limit) || 20;
+  // Пагинация нормализована (limit=-5 уезжал в SQL как LIMIT -5 → ошибка PG)
+  const { limit } = parsePagination(req.query, { defaultLimit: 20, maxLimit: 100 });
   const r = await db('SELECT * FROM games WHERE white = $1 OR black = $1 ORDER BY ended_at DESC LIMIT $2', [u, limit]);
   res.json(r.rows.map(row => ({
     id: row.id, white: row.white, black: row.black,
@@ -784,14 +654,6 @@ app.get('/api/leaderboard', async (req, res) => {
 });
 
 
-// Раньше здесь было Math.max(onlineUsers.size, io.engine?.clientsCount || 0).
-// onlineUsers — Set из юзернеймов (уже без дублей), а io.engine.clientsCount —
-// это СЫРОЕ число открытых транспортных соединений на движке socket.io,
-// включая кратковременно "зависшие" старые соединения при быстрых
-// перезагрузках страницы (новый сокет уже подключился, а событие
-// disconnect старого ещё не долетело). Из-за Math.max счётчик онлайна
-// на секунды раздувался при частом F5, хотя реальных уникальных
-// пользователей больше не становилось. onlineUsers.size — точное число.
 app.get('/api/online',       (req, res) => res.json({ count: onlineUsers.size }));
 
 app.all('/api/ping',         (req, res) => res.status(200).end());
@@ -996,6 +858,37 @@ app.get('/api/admin/users', authMiddleware, async (req, res) => {
 });
 
 
+app.post('/api/admin/role', authMiddleware, async (req, res) => {
+  await requireOwner(req, res, async () => {
+    try {
+      const target = await getUser(String(req.body.username || '').toLowerCase());
+      if (!target) return res.status(404).json({ error: 'Не найден' });
+      if (target.username.toLowerCase() === String(req.user.username).toLowerCase())
+        return res.status(400).json({ error: 'Нельзя изменить собственную роль' });
+      if (isSiteOwner(target)) return res.status(403).json({ error: 'Роль владельца изменять нельзя' });
+
+      const grant = !!req.body.grant;
+      if (grant) {
+        if (target.role === 'admin') return res.json({ ok: true, role: 'admin' });
+        target.role = 'admin';
+        await saveUser(target);
+        console.log(`[Admin] ${req.user.username} выдал роль администратора: ${target.username}`);
+      } else {
+        if (target.role !== 'admin') return res.json({ ok: true, role: target.role || 'user' });
+        target.role = 'user';
+        await saveUser(target);
+        console.log(`[Admin] ${req.user.username} снял роль администратора: ${target.username}`);
+      }
+      await logAdminAction(req.user.username, grant ? 'role_grant' : 'role_revoke', target.username, {});
+      res.json({ ok: true, role: target.role });
+    } catch (e) {
+      console.error('[AdminRole]', e);
+      res.status(500).json({ error: 'Ошибка смены роли: ' + e.message });
+    }
+  });
+});
+
+
 app.post('/api/admin/ban', authMiddleware, async (req, res) => {
   await requireAdmin(req, res, async () => {
     try {
@@ -1004,33 +897,10 @@ app.post('/api/admin/ban', authMiddleware, async (req, res) => {
       if (target.role === 'admin') return res.status(403).json({ error: 'Нельзя забанить администратора' });
 
       const reason = req.body.reason || 'Нарушение правил';
-      const targetDevice = target.createdDeviceId;
-      if (targetDevice) { bannedDevices.add(targetDevice); await saveBanToDB(null, targetDevice); }
-
-      const r = await db('SELECT * FROM users WHERE created_device_id = $1 AND role != $2', [targetDevice || '__none__', 'admin']);
-      let count = 0;
-      for (const row of r.rows) {
-        const u = rowToUser(row);
-        if (!u.banned) {
-          const isTarget = u.username === target.username;
-          u.banned = true; u.banReason = reason + (!isTarget ? ' (мультиаккаунт)' : '');
-          await saveUser(u);
-          await removeUserChatMessages(u.username).catch(e => console.error('[Ban] chat cleanup:', e.message));
-          const sock = findSocketByUsername(u.username);
-          if (sock) { sock.emit('error', 'Аккаунт заблокирован'); sock.disconnect(); }
-          count++;
-        }
-      }
-      if (!target.banned) {
-        target.banned = true; target.banReason = reason;
-        await saveUser(target);
-        await removeUserChatMessages(target.username).catch(e => console.error('[Ban] chat cleanup:', e.message));
-        const sock = findSocketByUsername(target.username);
-        if (sock) { sock.emit('error', 'Аккаунт заблокирован'); sock.disconnect(); }
-        count++;
-      }
-      await logAdminAction(req.user.username, 'ban', target.username, { reason, accountsBanned: count, viaDeviceId: targetDevice || null });
-      res.json({ ok: true, accountsBanned: count });
+      // Бан аккаунта + мультиаккаунтов с того же устройства + каскад:
+      // выход из клубов и турниров, чистка клубных/турнирных чатов (см. moderation.js).
+      const out = await moderation.banUserFully(req.user.username, target, reason);
+      res.json({ ok: true, accountsBanned: out.accountsBanned, cascade: out.cascade });
     } catch (e) {
       console.error('[Ban]', e);
       res.status(500).json({ error: 'Ошибка бана: ' + e.message });
@@ -1102,8 +972,8 @@ app.post('/api/admin/unshadowban', authMiddleware, async (req, res) => {
 
 
 // ── VIP-значок ──────────────────────────────────────────────────
-// Выдают/снимают только chesshome и Marina64 (requireVipGranter),
-// а не любой admin — так попросил владелец.
+// Выдают/снимают сайт-админы (requireVipGranter: роль 'admin' в БД либо
+// legacy-ники bootstrap — см. isVipGranter).
 app.post('/api/admin/vip/grant', authMiddleware, async (req, res) => {
   await requireVipGranter(req, res, async () => {
     try {
@@ -1422,15 +1292,21 @@ app.post('/api/appeals', authMiddleware, rateLimit(limiterStrict), async (req, r
 
 app.get('/api/appeals/mine', authMiddleware, async (req, res) => {
   const list = await db(`SELECT * FROM appeals WHERE username = $1 ORDER BY created_at DESC LIMIT 20`, [req.user.username]);
-  const appeals = [];
-  for (const row of list.rows) {
-    const msgs = await db(`SELECT * FROM appeal_messages WHERE appeal_id = $1 ORDER BY created_at ASC`, [row.id]);
-    appeals.push({
-      id: row.id, reason: row.reason, status: row.status, awaiting: row.awaiting,
-      createdAt: Number(row.created_at), updatedAt: Number(row.updated_at),
-      messages: msgs.rows.map(m => ({ id: m.id, author: m.author, isAdmin: m.is_admin, message: m.message, createdAt: Number(m.created_at) }))
-    });
+  const ids = list.rows.map(r => r.id);
+  const byAppeal = new Map();
+  if (ids.length) {
+    const placeholders = ids.map((_, i) => `$${i + 1}`).join(',');
+    const allMsgs = await db(`SELECT * FROM appeal_messages WHERE appeal_id IN (${placeholders}) ORDER BY created_at ASC`, ids);
+    for (const m of allMsgs.rows) {
+      if (!byAppeal.has(m.appeal_id)) byAppeal.set(m.appeal_id, []);
+      byAppeal.get(m.appeal_id).push(m);
+    }
   }
+  const appeals = list.rows.map(row => ({
+    id: row.id, reason: row.reason, status: row.status, awaiting: row.awaiting,
+    createdAt: Number(row.created_at), updatedAt: Number(row.updated_at),
+    messages: (byAppeal.get(row.id) || []).map(m => ({ id: m.id, author: m.author, isAdmin: m.is_admin, message: m.message, createdAt: Number(m.created_at) }))
+  }));
   res.json(appeals);
 });
 
@@ -1554,7 +1430,7 @@ app.get('/api/tournaments/:id', (req, res) => {
   if (authToken_) {
     try { const d = jwt.verify(authToken_, JWT_SECRET); const u = usersCache.get(d.username.toLowerCase()); isAdmin = u?.role === 'admin'; } catch {}
   }
-  res.json({ ...t, participants: sorted, status: getTournamentStatus(t, now), isArchive: t.endsAt < now - 365*24*60*60*1000, blacklist: isAdmin ? (t.blacklist || []) : undefined, createdByIsAdmin: usersCache.get((t.createdBy || '').toLowerCase())?.role === 'admin', teams: getInterclubTeamsInfo(t), teamStandings: computeTeamStandings(t) });
+  res.json({ ...t, participants: sorted, status: getTournamentStatus(t, now), serverNow: now, isArchive: t.endsAt < now - 365*24*60*60*1000, blacklist: isAdmin ? (t.blacklist || []) : undefined, createdByIsAdmin: usersCache.get((t.createdBy || '').toLowerCase())?.role === 'admin', teams: getInterclubTeamsInfo(t), teamStandings: computeTeamStandings(t) });
 });
 
 
@@ -1599,11 +1475,27 @@ app.post('/api/tournaments', authMiddleware, async (req, res) => {
   }
 
   const bl = Array.isArray(blacklist) ? blacklist.map(s => String(s).toLowerCase().trim()).filter(Boolean).slice(0, 100) : [];
+
+  const tc = parseTimeControl(timeControl);
+  if (!tc) return res.status(400).json({ error: 'Неверный контроль времени (формат «10+0», «3+2»)' });
+
+  let duration = parseInt(durationMinutes, 10);
+  if (!Number.isFinite(duration)) return res.status(400).json({ error: 'Неверная длительность' });
+  duration = Math.max(5, Math.min(duration, 7 * 24 * 60)); // 5 минут … 7 суток
+
+  let maxP = parseInt(maxParticipants, 10);
+  if (!Number.isFinite(maxP) || maxP < 0) maxP = 0;
+  maxP = Math.min(maxP, 512);
+
+  let minR = parseInt(minRating, 10); if (!Number.isFinite(minR) || minR < 0) minR = 0;
+  let maxR = parseInt(maxRating, 10); if (!Number.isFinite(maxR) || maxR <= 0) maxR = 9999;
+  if (minR > maxR) { const tmp = minR; minR = maxR; maxR = tmp; }
+
   const tournament = {
     id: uuidv4(), name: name.trim().slice(0, 60), description: (description || '').trim().slice(0, 1000),
-    timeControl, durationMinutes: parseInt(durationMinutes),
-    startsAt: startTime, endsAt: startTime + parseInt(durationMinutes) * 60000,
-    maxParticipants: parseInt(maxParticipants) || 0, minRating: parseInt(minRating) || 0, maxRating: parseInt(maxRating) || 9999,
+    timeControl: tc.raw, durationMinutes: duration,
+    startsAt: startTime, endsAt: startTime + duration * 60000,
+    maxParticipants: maxP, minRating: minR, maxRating: maxR,
     blacklist: bl, createdBy: user.username, createdAt: now,
     participants: [], games: [], winner: null,
     clubId: finalClubId, clubOnly: finalClubOnly,
@@ -1617,12 +1509,6 @@ app.post('/api/tournaments', authMiddleware, async (req, res) => {
 
 
 // ── Создание межклубного турнира — теперь доступно любому пользователю ──
-// (раньше было только сайт-админу). В теле запроса вместо clubId/clubOnly
-// передаётся teamLinks — массив ссылок (или голых id) на клубы-команды,
-// которые будут сражаться в этом турнире. Управление уже созданным турниром
-// (редактирование, удаление) по-прежнему доступно только сайт-админу —
-// см. canManageTournament — это защита от того, что случайный участник
-// сможет менять состав команд или снести чужой турнир.
 app.post('/api/tournaments/interclub', authMiddleware, async (req, res) => {
   if (!req.user) return res.status(401).json({ error: 'Нет доступа' });
   const user = await getUser(req.user.username.toLowerCase());
@@ -1632,6 +1518,7 @@ app.post('/api/tournaments/interclub', authMiddleware, async (req, res) => {
   const { name, description, timeControl, durationMinutes, startsAt, minRating, maxRating, blacklist, teamLinks } = req.body;
   if (!name || !timeControl || !durationMinutes || !startsAt) return res.status(400).json({ error: 'Заполните обязательные поля' });
 
+  if (Array.isArray(teamLinks) && teamLinks.length > 500) return res.status(400).json({ error: 'Слишком много ссылок на команды' });
   const { teamIds, notFound } = resolveInterclubTeams(teamLinks);
   if (teamIds.length < 2) return res.status(400).json({ error: 'Нужно указать ссылки минимум на 2 клуба-команды' });
   if (teamIds.length > MAX_INTERCLUB_TEAMS) return res.status(400).json({ error: `Максимум ${MAX_INTERCLUB_TEAMS} команд в межклубном турнире` });
@@ -1655,13 +1542,21 @@ app.post('/api/tournaments/interclub', authMiddleware, async (req, res) => {
   }
 
   const bl = Array.isArray(blacklist) ? blacklist.map(s => String(s).toLowerCase().trim()).filter(Boolean).slice(0, 100) : [];
+  const tc = parseTimeControl(timeControl);
+  if (!tc) return res.status(400).json({ error: 'Неверный контроль времени (формат «10+0», «3+2»)' });
+  let duration = parseInt(durationMinutes, 10);
+  if (!Number.isFinite(duration)) return res.status(400).json({ error: 'Неверная длительность' });
+  duration = Math.max(5, Math.min(duration, 7 * 24 * 60));
+  let minR = parseInt(minRating, 10); if (!Number.isFinite(minR) || minR < 0) minR = 0;
+  let maxR = parseInt(maxRating, 10); if (!Number.isFinite(maxR) || maxR <= 0) maxR = 9999;
+  if (minR > maxR) { const tmp = minR; minR = maxR; maxR = tmp; }
   const tournament = {
     id: uuidv4(), name: name.trim().slice(0, 60), description: (description || '').trim().slice(0, 1000),
-    timeControl, durationMinutes: parseInt(durationMinutes),
-    startsAt: startTime, endsAt: startTime + parseInt(durationMinutes) * 60000,
+    timeControl: tc.raw, durationMinutes: duration,
+    startsAt: startTime, endsAt: startTime + duration * 60000,
     // У межклубных турниров нет общего лимита участников — он естественно
     // ограничен суммарным числом членов заявленных команд.
-    maxParticipants: 0, minRating: parseInt(minRating) || 0, maxRating: parseInt(maxRating) || 9999,
+    maxParticipants: 0, minRating: minR, maxRating: maxR,
     blacklist: bl, createdBy: user.username, createdAt: now,
     participants: [], games: [], winner: null,
     clubId: null, clubOnly: false,
@@ -1885,6 +1780,7 @@ app.post('/api/tournaments/:id/chat', authMiddleware, rateLimit(limiterStrict), 
   const text = (req.body.message || '').toString().trim().slice(0, 300);
   if (!text) return res.status(400).json({ error: 'Пустое сообщение' });
 
+  moderation.record({ username: me.username, channel: 'tournament:' + t.id, text });
   const msg = { id: uuidv4(), username: me.username, role: me.role || 'user', message: text, timestamp: now };
   const chat = getTournamentChat(t.id);
   chat.push(msg);
@@ -1986,7 +1882,18 @@ app.get('/api/dm/messages/:partner', authMiddleware, async (req, res) => {
   // Сообщения, отправленные теневым баном, видит только сам отправитель —
   // если это писал partner, а не я, они для меня как будто не существуют.
   const rows = r.rows.filter(m => !m.shadow_hidden || m.from_user.toLowerCase() === me);
-  const msgs = rows.map(m => ({ id: m.id, from: m.from_user, to: m.to_user, text: m.text, ts: m.ts, read: m.read }));
+  const quotedIds = rows.map(m => m.reply_to_id).filter(Boolean);
+  const quotedMap = new Map();
+  if (quotedIds.length) {
+    const uniq = [...new Set(quotedIds)];
+    const placeholders = uniq.map((_, i) => `$${i + 1}`).join(',');
+    const qr = await db(`SELECT id, from_user, text FROM dm_messages WHERE id IN (${placeholders})`, uniq).catch(() => ({ rows: [] }));
+    for (const qm of qr.rows) quotedMap.set(qm.id, { id: qm.id, from: qm.from_user, text: String(qm.text || '').slice(0, 140) });
+  }
+  const msgs = rows.map(m => ({
+    id: m.id, from: m.from_user, to: m.to_user, text: m.text, ts: m.ts, read: m.read,
+    replyTo: m.reply_to_id ? (quotedMap.get(m.reply_to_id) || null) : null,
+  }));
   const blockedByMe      = await db('SELECT 1 FROM dm_blocks WHERE blocker ILIKE $1 AND blocked ILIKE $2', [me, partner]);
   const blockedByPartner = await db('SELECT 1 FROM dm_blocks WHERE blocker ILIKE $1 AND blocked ILIKE $2', [partner, me]);
   const partnerVip = isVip(await getUser(partner));
@@ -1998,7 +1905,7 @@ app.post('/api/dm/send', authMiddleware, rateLimit(limiterStrict), async (req, r
   const me = req.user.username;
   const meUser = await getUser(me.toLowerCase());
   if (!meUser || meUser.banned) return res.status(403).json({ error: 'Ваш аккаунт заблокирован' });
-  const { to, text } = req.body;
+  const { to, text, replyTo } = req.body;
   if (!to || !text || !text.trim()) return res.status(400).json({ error: 'Укажите получателя и текст' });
   if (to.toLowerCase() === me.toLowerCase()) return res.status(400).json({ error: 'Нельзя писать самому себе' });
   if (isSystemSender(to)) return res.status(403).json({ error: 'Этому аккаунту нельзя написать' });
@@ -2007,9 +1914,18 @@ app.post('/api/dm/send', authMiddleware, rateLimit(limiterStrict), async (req, r
   if (!toUser) return res.status(404).json({ error: 'Пользователь не найден' });
   const blocked = await db('SELECT 1 FROM dm_blocks WHERE (blocker ILIKE $1 AND blocked ILIKE $2) OR (blocker ILIKE $2 AND blocked ILIKE $1)', [me, to]);
   if (blocked.rows.length > 0) return res.status(403).json({ error: 'Переписка заблокирована' });
+
+  let replyToId = null;
+  if (typeof replyTo === 'string' && replyTo) {
+    const q = await db('SELECT id FROM dm_messages WHERE id = $1 AND ((from_user ILIKE $2 AND to_user ILIKE $3) OR (from_user ILIKE $3 AND to_user ILIKE $2)) LIMIT 1', [replyTo, me.toLowerCase(), to.toLowerCase()]);
+    if (!q.rows[0]) return res.status(400).json({ error: 'Сообщение для ответа не найдено' });
+    replyToId = q.rows[0].id;
+  }
+
+  moderation.record({ username: me, channel: 'dm', text, target: to });
   const shadowHidden = !!meUser.shadowBanned;
-  const msg = { id: uuidv4(), from: me, to, text: text.trim(), ts: new Date().toISOString(), read: false };
-  await db('INSERT INTO dm_messages (id, from_user, to_user, text, ts, read, shadow_hidden) VALUES ($1,$2,$3,$4,$5,$6,$7)', [msg.id, msg.from, msg.to, msg.text, msg.ts, msg.read, shadowHidden]);
+  const msg = { id: uuidv4(), from: me, to, text: text.trim(), ts: new Date().toISOString(), read: false, replyTo: replyToId };
+  await db('INSERT INTO dm_messages (id, from_user, to_user, text, ts, read, shadow_hidden, reply_to_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)', [msg.id, msg.from, msg.to, msg.text, msg.ts, msg.read, shadowHidden, replyToId]);
   // Теневой бан: получателю сообщение НЕ шлём вообще (для него это как будто
   // никогда не отправлялось) — только отправителю, чтобы у него всё выглядело
   // как обычная успешная отправка.
@@ -2040,7 +1956,7 @@ app.post('/api/dm/block', authMiddleware, async (req, res) => {
   const me = req.user.username;
   const { username } = req.body;
   if (!username || username.toLowerCase() === me.toLowerCase()) return res.status(400).json({ error: 'Неверный запрос' });
-  await db('INSERT INTO dm_blocks (blocker, blocked, ts) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING', [me, username, new Date().toISOString()]);
+  await db('INSERT INTO dm_blocks (blocker, blocked, ts) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING', [me, username, Date.now()]);
   res.json({ ok: true });
 });
 
@@ -2103,7 +2019,7 @@ app.post('/api/admin/system-message', authMiddleware, rateLimit(limiterStrict), 
 
 
 app.get('/api/admin/dm/conversations/:username', authMiddleware, async (req, res) => {
-  await requireAdmin(req, res, async () => {
+  await requireOwner(req, res, async () => {
     const target = req.params.username.toLowerCase();
     const targetUser = await getUser(target);
     if (!targetUser) return res.status(404).json({ error: 'Пользователь не найден' });
@@ -2124,7 +2040,7 @@ app.get('/api/admin/dm/conversations/:username', authMiddleware, async (req, res
 
 
 app.get('/api/admin/dm/messages/:username/:partner', authMiddleware, async (req, res) => {
-  await requireAdmin(req, res, async () => {
+  await requireOwner(req, res, async () => {
     const target  = req.params.username.toLowerCase();
     const partner = req.params.partner.toLowerCase();
     const targetUser  = await getUser(target);
@@ -2143,10 +2059,8 @@ app.get('/api/admin/dm/messages/:username/:partner', authMiddleware, async (req,
 });
 
 
-// Аудит-лог просмотров переписок — кто из админов и когда смотрел
-// чьи ЛС. Помогает расследовать злоупотребление доступом.
 app.get('/api/admin/dm/audit', authMiddleware, async (req, res) => {
-  await requireAdmin(req, res, async () => {
+  await requireOwner(req, res, async () => {
     const target = (req.query.target || '').toLowerCase();
     const r = target
       ? await db('SELECT * FROM admin_dm_audit WHERE target ILIKE $1 ORDER BY created_at DESC LIMIT 200', [target])
@@ -2222,6 +2136,9 @@ app.get('/api/admin/multiaccounts', authMiddleware, async (req, res) => {
 });
 
 
+// ── Вероятностная оценка дубликатов: POST /api/sig, GET /api/admin/twins, POST /api/admin/twins/label ──
+twins.mount(app, { authMiddleware, requireAdmin, logAdminAction, getIP });
+
 // ── Дашборд администратора ──────────────────────────────────────
 // Сводка для главного экрана админки: онлайн, регистрации/партии по
 // дням, баны, открытые жалобы/обращения. Отдельно от публичного
@@ -2278,7 +2195,7 @@ app.get('/api/forum/threads', (req, res) => {
   res.json({ threads: sorted.slice(page * limit, page * limit + limit), total: sorted.length, page, limit });
 });
 
-app.get('/api/forum/threads/:slug', (req, res) => {
+app.get('/api/forum/threads/:slug', async (req, res) => {
   const thread = forumThreads.find(t => t.slug === req.params.slug || t.id === req.params.slug);
   if (!thread) return res.status(404).json({ error: 'Тема не найдена' });
 
@@ -2291,15 +2208,44 @@ app.get('/api/forum/threads/:slug', (req, res) => {
   const totalReplies = allReplies.length;
   const replies = allReplies.slice(start, end);
 
+  let viewerUsername = null;
+  const authTok946 = getAuthToken(req);
+  if (authTok946) { try { viewerUsername = jwt.verify(authTok946, JWT_SECRET).username.toLowerCase(); } catch {} }
+  if (replies.length) {
+    const ids = replies.map(r => r.id);
+    const placeholders = ids.map((_, i) => `$${i + 1}`).join(',');
+    const params = viewerUsername ? [...ids, viewerUsername] : ids;
+    const rrows = await db(
+      `SELECT reply_id, emoji, COUNT(*) AS cnt${viewerUsername ? ', BOOL_OR(username_low = $' + (ids.length + 1) + ') AS mine' : ''}
+         FROM forum_reply_reactions WHERE reply_id IN (${placeholders})
+         GROUP BY reply_id, emoji`,
+      params
+    ).catch(() => ({ rows: [] }));
+    const byReply = new Map();
+    for (const row of rrows.rows) {
+      if (!byReply.has(row.reply_id)) byReply.set(row.reply_id, { reactions: {}, myReaction: null });
+      const entry = byReply.get(row.reply_id);
+      entry.reactions[row.emoji] = Number(row.cnt);
+      if (row.mine) entry.myReaction = row.emoji;
+    }
+    for (const r of replies) {
+      const e = byReply.get(r.id);
+      r.reactions = e?.reactions || {};
+      r.myReaction = e?.myReaction || null;
+    }
+  }
+
   let viewerKey;
   const authTok945 = getAuthToken(req);
   if (authTok945) {
     try { const p = jwt.verify(authTok945, JWT_SECRET); viewerKey = 'u:' + p.username.toLowerCase(); }
     catch { viewerKey = 'ip:' + getIP(req); }
   } else { viewerKey = 'ip:' + getIP(req); }
-  if (!forumViewSessions.has(thread.id)) forumViewSessions.set(thread.id, new Set());
-  const viewers = forumViewSessions.get(thread.id);
-  if (!viewers.has(viewerKey)) { viewers.add(viewerKey); thread.views++; saveForumThread(thread).catch(() => {}); }
+  // Утечка памяти (P1): учёт просмотрщиков вынесен в trackForumView (core.js),
+  // где размер forumViewSessions ограничен (лимит тем и лимит Set на тему).
+  if (trackForumView(thread.id, viewerKey)) {
+    thread.views++; saveForumThread(thread).catch(() => {});
+  }
 
   res.json({
     thread,
@@ -2395,6 +2341,34 @@ app.delete('/api/forum/replies/:id', authMiddleware, handleDeleteForumReply);
 app.post('/api/forum/replies/:id/delete', authMiddleware, handleDeleteForumReply);
 
 
+const FORUM_REPLY_EMOJIS = ['👍','👎','❤️','😂','😮','♟️'];
+app.post('/api/forum/replies/:id/react', authMiddleware, rateLimit(limiterStrict), async (req, res) => {
+  const user = await getUser(req.user.username.toLowerCase());
+  if (!user || user.banned) return res.status(403).json({ error: 'Нет доступа' });
+  const reply = forumReplies.find(r => r.id === req.params.id);
+  if (!reply) return res.status(404).json({ error: 'Ответ не найден' });
+
+  const { emoji } = req.body;
+  if (!FORUM_REPLY_EMOJIS.includes(emoji)) return res.status(400).json({ error: 'Неверный эмоджи' });
+  const usernameLow = user.username.toLowerCase();
+
+  const existing = await db('SELECT emoji FROM forum_reply_reactions WHERE reply_id=$1 AND username_low=$2', [reply.id, usernameLow]);
+  if (existing.rows[0]?.emoji === emoji) {
+    await db('DELETE FROM forum_reply_reactions WHERE reply_id=$1 AND username_low=$2', [reply.id, usernameLow]);
+  } else if (existing.rows[0]) {
+    await db('UPDATE forum_reply_reactions SET emoji=$1 WHERE reply_id=$2 AND username_low=$3', [emoji, reply.id, usernameLow]);
+  } else {
+    await db('INSERT INTO forum_reply_reactions (reply_id, username_low, emoji, created_at) VALUES ($1,$2,$3,$4)', [reply.id, usernameLow, emoji, Date.now()]);
+  }
+
+  const rr = await db('SELECT emoji, COUNT(*) AS cnt FROM forum_reply_reactions WHERE reply_id=$1 GROUP BY emoji', [reply.id]);
+  const reactions = {};
+  for (const row of rr.rows) reactions[row.emoji] = Number(row.cnt);
+  const mineNow = existing.rows[0]?.emoji === emoji ? null : emoji;
+  res.json({ ok: true, reactions, myReaction: mineNow });
+});
+
+
 app.post('/api/forum/threads', authMiddleware, rateLimit(limiterStrict), async (req, res) => {
   const user = await getUser(req.user.username.toLowerCase());
   if (!user || user.banned) return res.status(403).json({ error: 'Аккаунт заблокирован' });
@@ -2405,14 +2379,8 @@ app.post('/api/forum/threads', authMiddleware, rateLimit(limiterStrict), async (
   if (title.length > 120) return res.status(400).json({ error: 'Заголовок слишком длинный (макс 120)' });
   if (body.length > 10000) return res.status(400).json({ error: 'Текст слишком длинный (макс 10 000)' });
 
-  // Ограничение: не более 3 тем в сутки
-  const dayStart = new Date();
-  dayStart.setHours(0, 0, 0, 0);
-  const todayCount = forumThreads.filter(t =>
-    t.author.toLowerCase() === user.username.toLowerCase() &&
-    t.createdAt >= dayStart.getTime()
-  ).length;
-  if (todayCount >= 3) {
+  // Ограничение: не более 3 тем в сутки — через общий countTodayByUser
+  if (countTodayByUser(forumThreads, user.username) >= 3) {
     return res.status(429).json({ error: 'Вы уже создали 3 темы сегодня. Лимит сбросится в полночь.' });
   }
 
@@ -2521,8 +2489,8 @@ app.get('/api/follow/online-friends', authMiddleware, async (req, res) => {
 });
 
 
-app.get('/api/blog', (req, res) => {
-  const { section, status, sort, page: pQ, limit: lQ } = req.query;
+app.get('/api/blog', async (req, res) => {
+  const { section, status, sort, q, page: pQ, limit: lQ } = req.query;
   const page  = Math.max(0, parseInt(pQ) || 0);
   const limit = Math.min(50, parseInt(lQ) || 20);
 
@@ -2558,13 +2526,14 @@ app.get('/api/blog', (req, res) => {
     if (section === 'community') list = list.filter(p => !!p.community);
   }
 
-  // Раньше опубликованные статьи всегда сортировались только по
-  // популярности (просмотры + лайки×3). Из-за этого свежая статья с
-  // нулевыми просмотрами падала в самый низ и, если постов в разделе
-  // больше `limit`, вообще не попадала на первую страницу — выглядело
-  // так, будто она "удалилась" сразу после публикации. Теперь сортировка
-  // управляется параметром sort: 'recent' (по умолчанию, свежие сверху)
-  // или 'popular' (по просмотрам/лайкам, как раньше).
+  const searchQ = typeof q === 'string' ? q.trim().toLowerCase() : '';
+  if (searchQ.length >= 2) {
+    list = list.filter(p =>
+      String(p.title || '').toLowerCase().includes(searchQ) ||
+      String(p.body || '').toLowerCase().includes(searchQ)
+    );
+  }
+
   if (status === 'drafts' || status === 'hidden') {
     list.sort((a,b) => (b.updatedAt||b.createdAt) - (a.updatedAt||a.createdAt));
   } else if (sort === 'popular') {
@@ -2573,9 +2542,11 @@ app.get('/api/blog', (req, res) => {
     list.sort((a,b) => b.createdAt - a.createdAt);
   }
 
+  // Статьи забаненных авторов скрыты для всех, кроме самого автора и админов
+  list = await moderation.filterVisible(req, list, p => p.author);
+
   res.json({ posts: list.slice(page*limit, page*limit+limit).map(p => blogSanitize(p,false)), total: list.length });
 });
-
 
 
 app.get('/api/blog/:id', async (req, res) => {
@@ -2585,6 +2556,9 @@ app.get('/api/blog/:id', async (req, res) => {
   // Прикрытая статья не видна вообще никому (даже автору и админу) —
   // управление такими статьями идёт только через список "Скрытые".
   if (post.status === 'hidden') return res.status(404).json({ error: 'Статья не найдена' });
+
+  // Статья забаненного автора видна только ему самому и админам
+  if (!(await moderation.isAuthorVisible(req, post.author))) return res.status(404).json({ error: 'Статья не найдена' });
 
   if (post.status !== 'published') {
     let callerUsername = null;
@@ -2662,6 +2636,7 @@ app.patch('/api/blog/:id', blogAuthMiddleware, rateLimit(limiterStrict), async (
   const caller = req.blogUser.username;
   if (!isBlogAdmin(caller) && post.author.toLowerCase() !== caller.toLowerCase())
     return res.status(403).json({ error: 'Нет доступа' });
+  { const cu = await getUser(caller.toLowerCase()); if (cu && cu.banned && !isBlogAdmin(caller)) return res.status(403).json({ error: 'Заблокированные не могут редактировать статьи' }); }
   let { title, body, status, encoding } = req.body;
   title = decodeBlogField(title, encoding);
   body  = decodeBlogField(body, encoding);
@@ -2736,7 +2711,7 @@ app.get('/api/blog/:id/comments', async (req, res) => {
     reactions = rr.rows;
   }
 
-  const comments = r.rows.map(c => {
+  let comments = r.rows.map(c => {
     const myReaction = callerUsername ? reactions.find(rr => rr.comment_id===c.id && rr.user_id===callerUsername) : null;
     const reactionMap = {};
     for (const rr of reactions.filter(rr=>rr.comment_id===c.id)) {
@@ -2754,6 +2729,8 @@ app.get('/api/blog/:id/comments', async (req, res) => {
     };
   });
 
+  comments = await moderation.filterVisible(req, comments, c => c.author);
+
   let myBan = null;
   if (callerUsername) myBan = await getCommentBan(req.params.id, callerUsername);
 
@@ -2767,7 +2744,7 @@ app.post('/api/blog/:id/comments', blogAuthMiddleware, rateLimit(limiterStrict),
 
   const user = await getUser(req.blogUser.username.toLowerCase());
   if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
-  if (user.banned) return res.status(403).json({ error: 'Вы заблокированы' });
+  // Забаненному не сообщаем: комментарий публикуется, но виден только ему (см. GET)
 
   const ban = await getCommentBan(req.params.id, user.username);
   if (ban) {
@@ -2796,6 +2773,7 @@ app.post('/api/blog/:id/comments', blogAuthMiddleware, rateLimit(limiterStrict),
   if (Date.now() - last < 20000) return res.status(429).json({ error: 'Не так быстро! Подождите 20 секунд' });
   global._blogCmtRate.set(ratKey, Date.now());
 
+  moderation.record({ username: user.username, channel: 'blog-comments', text: body });
   const id = uuidv4();
   const createdAt = Date.now();
   await db('INSERT INTO blog_comments (id,post_id,author,body,created_at,deleted,edit_count) VALUES ($1,$2,$3,$4,$5,FALSE,0)', [id, req.params.id, user.username, body, createdAt]);
@@ -2849,11 +2827,14 @@ app.post('/api/blog/:id/comments/:cid/react', blogAuthMiddleware, rateLimit(limi
   const r = await db('SELECT id,deleted FROM blog_comments WHERE id=$1 AND post_id=$2',[req.params.cid,req.params.id]);
   if (!r.rows[0] || r.rows[0].deleted) return res.status(404).json({ error: 'Комментарий не найден' });
 
-  const ALLOWED_EMOJIS = ['👍','❤️','😂','😮','😢','😡','♟️'];
+  const ALLOWED_EMOJIS = ['👍','❤️','😂','😮','😢','😡','♟️','👎'];
   const { emoji } = req.body;
   if (!emoji) {
     await db('DELETE FROM blog_comment_reactions WHERE comment_id=$1 AND user_id=$2',[req.params.cid,user.username.toLowerCase()]);
-    return res.json({ ok: true, removed: true });
+    const rr = await db('SELECT emoji, COUNT(*) as cnt FROM blog_comment_reactions WHERE comment_id=$1 GROUP BY emoji',[req.params.cid]);
+    const reactions = {};
+    for (const row of rr.rows) reactions[row.emoji] = Number(row.cnt);
+    return res.json({ ok: true, removed: true, reactions, myReaction: null });
   }
   if (!ALLOWED_EMOJIS.includes(emoji)) return res.status(400).json({ error: 'Неверный эмоджи' });
 
@@ -3132,12 +3113,13 @@ app.get('/api/news/:id/comments', async (req, res) => {
   if (auth) { try { callerUsername = jwt.verify(auth,JWT_SECRET).username.toLowerCase(); } catch {} }
 
   const r = await db('SELECT * FROM news_comments WHERE post_id=$1 ORDER BY created_at ASC',[req.params.id]);
-  const comments = r.rows.map(c => ({
+  let comments = r.rows.map(c => ({
     id: c.id, postId: c.post_id, author: c.author,
     body: c.deleted ? null : c.body,
     deleted: c.deleted, deletedBy: c.deleted_by || null,
     createdAt: Number(c.created_at),
   }));
+  comments = await moderation.filterVisible(req, comments, c => c.author);
 
   let myBan = null;
   if (callerUsername) {
@@ -3155,7 +3137,7 @@ app.post('/api/news/:id/comments', newsAuthMiddleware, rateLimit(limiterStrict),
 
   const user = await getUser(req.newsUser.username.toLowerCase());
   if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
-  if (user.banned) return res.status(403).json({ error: 'Вы заблокированы' });
+  // Забаненному не сообщаем: комментарий публикуется, но виден только ему (см. GET)
 
   const mute = await getNewsCommentMute(req.params.id, user.username);
   if (mute) {
@@ -3180,6 +3162,7 @@ app.post('/api/news/:id/comments', newsAuthMiddleware, rateLimit(limiterStrict),
   if (Date.now() - last < 20000) return res.status(429).json({ error: 'Не так быстро! Подождите 20 секунд' });
   global._newsCmtRate.set(ratKey, Date.now());
 
+  moderation.record({ username: user.username, channel: 'news-comments', text: body });
   const id = uuidv4();
   const createdAt = Date.now();
   await db('INSERT INTO news_comments (id,post_id,author,body,created_at,deleted) VALUES ($1,$2,$3,$4,$5,FALSE)', [id, req.params.id, user.username, body, createdAt]);
@@ -3222,6 +3205,15 @@ app.post('/api/upload', newsAuthMiddleware, rateLimit(limiterStrict), (req, res)
   uploadImage.single('file')(req, res, (err) => {
     if (err) return res.status(400).json({ error: err.message || 'Не удалось загрузить файл' });
     if (!req.file) return res.status(400).json({ error: 'Файл не передан' });
+    const fd = fs.openSync(req.file.path, 'r');
+    const buf = Buffer.alloc(16);
+    let read = 0;
+    try { read = fs.readSync(fd, buf, 0, 16, 0); } finally { fs.closeSync(fd); }
+    const sniffed = sniffImageMime(buf.subarray(0, read));
+    if (!sniffed) {
+      fs.unlink(req.file.path, () => {});
+      return res.status(400).json({ error: 'Файл не является изображением' });
+    }
     res.json({ url: '/uploads/' + req.file.filename });
   });
 });
@@ -3264,7 +3256,7 @@ app.post('/api/clubs', authMiddleware, rateLimit(limiterStrict), async (req, res
   if (memberOf >= 10) return res.status(400).json({ error: 'Вы уже состоите в 10 клубах (максимум)' });
   if (clubs.find(c => c.name.toLowerCase() === trimmedName.toLowerCase())) return res.status(400).json({ error: 'Клуб с таким названием уже существует' });
   const id = uuidv4();
-  const club = { id, name: trimmedName, description: (description || '').toString().trim().slice(0, 500), createdAt: new Date().toISOString(), createdBy: me.username, admins: [me.username], members: [me.username], memberCount: 1, official: false };
+  const club = { id, name: trimmedName, description: (description || '').toString().trim().slice(0, 500), createdAt: Date.now(), createdBy: me.username, admins: [me.username], members: [me.username], memberCount: 1, official: false };
   clubs.push(club);
   await saveClub(club);
   res.json(club);
@@ -3301,9 +3293,6 @@ app.post('/api/user/emoji', authMiddleware, async (req, res) => {
     const { emoji } = req.body;
     if (typeof emoji !== 'string') return res.status(400).json({ error: 'Неверный эмодзи' });
     // Белый список: разрешён ТОЛЬКО пустая строка (снять эмодзи) или
-    // один из эмодзи, показанных в пикере на /settings. Раньше здесь
-    // был чёрный список "запрещённых" эмодзи — он не мешал прислать
-    // произвольный текст напрямую через API, минуя интерфейс.
     if (emoji !== '' && !PROFILE_EMOJIS.has(emoji)) {
       return res.status(400).json({ error: 'Этот эмодзи запрещён' });
     }
@@ -3323,20 +3312,29 @@ app.post('/api/user/emoji', authMiddleware, async (req, res) => {
 //  User Profile (описание + внешние рейтинги ФШР/FIDE)
 // ──────────────────────────────────────────────────────────────
 
+
+const INVISIBLE_RE = /[\u00AD\u034F\u115F\u1160\u180E\u200B\u2060\u2800\u3164\uFEFF\uFFA0\u202A-\u202E\u2066-\u2069\u0000-\u0009\u000B-\u001F\u007F-\u009F]/g;
+function cleanBio(raw) {
+  const cleaned = String(raw).replace(/\r\n?/g, '\n').replace(INVISIBLE_RE, '').trim();
+  // Если кроме пробелов и невидимых символов ничего нет, описание считаем пустым
+  if (!cleaned.replace(/[\s\u200C\u200D\u200E\u200F\uFE0F]/gu, '')) return '';
+  return cleaned;
+}
+
 app.post('/api/user/profile', authMiddleware, async (req, res) => {
   try {
     let { bio, fshrRating, fideRating } = req.body;
 
     if (bio != null && typeof bio !== 'string') return res.status(400).json({ error: 'Неверное описание' });
-    bio = (bio || '').slice(0, 400);
+    bio = cleanBio(bio || '').slice(0, 400);
 
+    fshrRating = (fshrRating === '' || fshrRating === undefined) ? null : fshrRating;
+    fideRating = (fideRating === '' || fideRating === undefined) ? null : fideRating;
     for (const [label, val] of [['ФШР', fshrRating], ['FIDE', fideRating]]) {
       if (val !== null && val !== undefined && (!Number.isFinite(val) || val < 0 || val > 4000)) {
         return res.status(400).json({ error: `Рейтинг ${label} должен быть числом от 0 до 4000` });
       }
     }
-    fshrRating = (fshrRating === '' || fshrRating === undefined) ? null : fshrRating;
-    fideRating = (fideRating === '' || fideRating === undefined) ? null : fideRating;
 
     const user = await getUser(req.user.username.toLowerCase());
     if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
@@ -3479,6 +3477,7 @@ app.post('/api/clubs/:id/chat', authMiddleware, rateLimit(limiterStrict), (req, 
   }
   const text = (req.body.message || '').toString().trim().slice(0, 300);
   if (!text) return res.status(400).json({ error: 'Пустое сообщение' });
+  moderation.record({ username: me.username, channel: 'club:' + club.id, text });
   const msg = { id: require('crypto').randomUUID(), username: me.username, role: me.role || 'user', message: text, timestamp: Date.now() };
   const chat = getClubChat(club.id);
   chat.push(msg);
@@ -3567,9 +3566,11 @@ app.get('/api/users/:username/clubs', (req, res) => {
 
 app.get('/api/puzzles/leaderboard', async (req, res) => {
   try {
-    const r = await db(`SELECT username,puzzle_rating,puzzle_solved,puzzle_attempted,role FROM users WHERE puzzle_attempted > 0 ORDER BY puzzle_rating DESC LIMIT 50`);
+    await puzzleService.ensureSchema();
+    const r = await db(`SELECT username,puzzle_rating,puzzle_solved,puzzle_attempted,puzzle_rating_system,role FROM users WHERE puzzle_attempted > 0 ORDER BY puzzle_rating DESC LIMIT 50`);
     res.json(r.rows.map((row,i) => ({
       rank: i+1, username: row.username,
+      oldSystem: Number(row.puzzle_rating_system) === 1,   // рейтинг набран по старой системе, ещё не сброшен
       puzzleRating: row.puzzle_rating||1200,
       puzzleSolved: row.puzzle_solved||0,
       puzzleAttempted: row.puzzle_attempted||0,
@@ -3620,7 +3621,7 @@ app.get('/api/durka/tournaments', async (req, res) => {
 
 // Приём результатов одного турнира от hi.py.
 // body: { tournamentId, name, url, results: [{ username, points, rank }] }
-app.post('/api/durka/add-tournament', durkaKeyMiddleware, async (req, res) => {
+app.post('/api/durka/add-tournament', rateLimit(limiterStrict, 'Слишком много запросов.'), durkaKeyMiddleware, async (req, res) => {
   try {
     const { tournamentId, name, url, results } = req.body || {};
     if (!tournamentId || !Array.isArray(results) || !results.length) {
@@ -3693,10 +3694,20 @@ app.post('/api/durka/add-tournament', durkaKeyMiddleware, async (req, res) => {
 
 app.get('/api/puzzles/daily', async (req, res) => {
   try {
-    const r = await db('SELECT * FROM puzzles ORDER BY created_at ASC');
+    const dayIndex = Math.floor(Date.now() / (24 * 60 * 60 * 1000));
+    if (dailyPuzzleCache.day === dayIndex && dailyPuzzleCache.payload) {
+      return res.json(dailyPuzzleCache.payload);
+    }
+    const cnt = await db('SELECT COUNT(*) AS n FROM puzzles');
+    const total = parseInt(cnt.rows[0].n);
+    if (!total) return res.json(null);
+    const idx = dayIndex % total;
+    const r = await db('SELECT id, title, description, fen, topic, difficulty FROM puzzles ORDER BY created_at ASC LIMIT 1 OFFSET $1', [idx]);
     if (!r.rows.length) return res.json(null);
-    const puzzle = r.rows[Math.floor(Date.now()/(24*60*60*1000)) % r.rows.length];
-    res.json({ id:puzzle.id, title:puzzle.title, description:puzzle.description, fen:puzzle.fen, topic:puzzle.topic, difficulty:puzzle.difficulty });
+    const puzzle = r.rows[0];
+    const payload = { id: puzzle.id, title: puzzle.title, description: puzzle.description, fen: puzzle.fen, topic: puzzle.topic, difficulty: puzzle.difficulty };
+    dailyPuzzleCache = { day: dayIndex, payload };
+    res.json(payload);
   } catch(e) { res.status(500).json({ error: 'Ошибка' }); }
 });
 
@@ -3730,7 +3741,6 @@ app.get('/api/puzzles', async (req, res) => {
       sql = `
         SELECT p.*,
           pa.correct  AS _correct,
-          pa.failed   AS _failed,
           CASE
             WHEN pa.id IS NULL        THEN 0
             WHEN pa.correct = false   THEN 1
@@ -3755,7 +3765,7 @@ app.get('/api/puzzles', async (req, res) => {
       return res.json(r.rows.map(row => ({
         id: row.id, title: row.title, description: row.description,
         fen: row.fen, topic: row.topic, difficulty: row.difficulty,
-        playCount: row.play_count, correctCount: row.correct_count,
+        playCount: row.play_count, correctCount: row.correct_count, rating: puzzleService.publicPuzzleRating(row),
         userStatus: solvedSet.has(row.id) ? 'solved' : attemptedSet.has(row.id) ? 'attempted' : 'new',
       })));
     }
@@ -3770,7 +3780,7 @@ app.get('/api/puzzles', async (req, res) => {
     return res.json(r.rows.map(row => ({
       id: row.id, title: row.title, description: row.description,
       fen: row.fen, topic: row.topic, difficulty: row.difficulty,
-      playCount: row.play_count, correctCount: row.correct_count,
+      playCount: row.play_count, correctCount: row.correct_count, rating: puzzleService.publicPuzzleRating(row),
       userStatus: 'new',
     })));
 
@@ -3783,119 +3793,225 @@ app.get('/api/puzzles/:id', async (req, res) => {
     const r = await db('SELECT * FROM puzzles WHERE id=$1',[req.params.id]);
     if (!r.rows[0]) return res.status(404).json({ error: 'Не найдена' });
     const p = r.rows[0];
-    res.json({ id:p.id, title:p.title, description:p.description, fen:p.fen, topic:p.topic, difficulty:p.difficulty, playCount:p.play_count, correctCount:p.correct_count });
+    res.json({ id:p.id, title:p.title, description:p.description, fen:p.fen, topic:p.topic, difficulty:p.difficulty, playCount:p.play_count, correctCount:p.correct_count, rating: puzzleService.publicPuzzleRating(p) });
   } catch(e) { res.status(500).json({ error: 'Ошибка' }); }
 });
 
 
-app.post('/api/puzzles/:id/move', authMiddleware, rateLimit(limiterStrict), async (req, res) => {
+// ── Задачи: сервер — единственный судья ─────────────────────────
+// Позицию, шаг и результат ведёт сервер (сессия «пользователь + задача»).
+// Клиент шлёт только ход. Мат засчитывается всегда. Рейтинг — Glicko-2,
+// один раз за первую попытку. Подробности: services/puzzle.service.js.
+// Показывать ли кнопку «Сбросить старый рейтинг» (только тем, кто ещё на старой системе).
+app.get('/api/puzzles/rating/status', authMiddleware, async (req, res) => {
   try {
-    const { moveIndex, move } = req.body;
-    if (move === undefined || moveIndex === undefined) return res.status(400).json({ error: 'Укажите move и moveIndex' });
-    const r = await db('SELECT * FROM puzzles WHERE id=$1', [req.params.id]);
-    if (!r.rows[0]) return res.status(404).json({ error: 'Задача не найдена' });
-    const puzzle = r.rows[0];
-    const { playerMoves, autoMoves } = parsePuzzleSolution(puzzle.solution);
-
-    const expectedRaw = playerMoves[moveIndex];
-    if (!expectedRaw) return res.status(400).json({ error: 'Некорректный moveIndex' });
-    const playerMove    = (move || '').toLowerCase().trim();
-    const acceptedMoves = expectedRaw.split('|').map(m => m.trim());
-    let correct = acceptedMoves.includes(playerMove)
-      || acceptedMoves.some(m => m.length===4 && playerMove.startsWith(m))
-      || acceptedMoves.some(m => m.length===5 && m.endsWith('q') && playerMove===m.slice(0,4));
-    if (!correct) return res.json({ correct: false, solution: puzzle.solution });
-    const autoMove = autoMoves[moveIndex] || null;
-    const finished = moveIndex >= playerMoves.length - 1;
-    res.json({ correct: true, autoMove, finished, solution: finished ? puzzle.solution : null });
-  } catch(e) { console.error('[Puzzle move]', e.message); res.status(500).json({ error: 'Ошибка' }); }
+    const user = await getUser(req.user.username.toLowerCase());
+    if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
+    const st = await puzzleService.getRatingStatus(user.id);
+    res.json({ canReset: !!(st && st.canReset), rating: st ? st.rating : 1200 });
+  } catch(e) { console.error('[Puzzle rating status]', e.message); res.status(500).json({ error: 'Ошибка' }); }
 });
 
-
-app.post('/api/puzzles/:id/attempt', authMiddleware, rateLimit(limiterStrict), async (req, res) => {
+// Одноразовый сброс старого рейтинга: дальше игрок живёт по Glicko-2 и с 1200.
+app.post('/api/puzzles/rating/reset', authMiddleware, rateLimit(limiterStrict), async (req, res) => {
   try {
-    const { correct: clientCorrect, moves } = req.body;
+    const user = await getUser(req.user.username.toLowerCase());
+    if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
+    const row = await puzzleService.resetRating(user.id);
+    if (!row) return res.json({ ok: true, alreadyReset: true, rating: user.puzzle_rating || 1200 });
+    user.puzzle_rating    = row.puzzle_rating;
+    user.puzzle_solved    = row.puzzle_solved;
+    user.puzzle_attempted = row.puzzle_attempted;
+    cacheUser(user);
+    res.json({ ok: true, alreadyReset: false, rating: row.puzzle_rating });
+  } catch(e) { console.error('[Puzzle rating reset]', e.message); res.status(500).json({ error: 'Ошибка' }); }
+});
 
-    const r = await db('SELECT * FROM puzzles WHERE id=$1', [req.params.id]);
+app.post('/api/puzzles/:id/start', authMiddleware, rateLimit(limiterStrict), async (req, res) => {
+  try {
+    const r = await db('SELECT id, fen, solution FROM puzzles WHERE id=$1', [req.params.id]);
     if (!r.rows[0]) return res.status(404).json({ error: 'Задача не найдена' });
-    const puzzle = r.rows[0];
+    const user = await getUser(req.user.username.toLowerCase());
+    if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
+    const { rated } = await puzzleService.startSession(user.id, r.rows[0]);
+    res.json({ ok: true, rated });
+  } catch(e) { console.error('[Puzzle start]', e.message); res.status(500).json({ error: 'Ошибка' }); }
+});
 
-    let correct;
-    if (typeof clientCorrect === 'boolean') {
-      correct = clientCorrect;
-    } else if (Array.isArray(moves)) {
-      const { playerMoves } = parsePuzzleSolution(puzzle.solution);
-      const userPlayerMoves = moves.filter((_, i) => i % 2 === 0);
-      correct = playerMoves.length > 0 &&
-        userPlayerMoves.length === playerMoves.length &&
-        playerMoves.every((m, i) => {
-          const variants = m.split('|').map(v => v.trim());
-          const played   = (userPlayerMoves[i] || '').toLowerCase().trim();
-          return variants.includes(played)
-            || variants.some(v => v.length===4 && played.startsWith(v))
-            || variants.some(v => v.length===5 && v.endsWith('q') && played===v.slice(0,4));
-        });
-    } else {
-      return res.status(400).json({ error: 'Укажите correct или moves' });
-    }
-
+app.post('/api/puzzles/:id/move', authMiddleware, rateLimit(limiterStrict), async (req, res) => {
+  try {
+    const { moveIndex, move } = req.body || {};
+    if (typeof move !== 'string' || move.length > 12) return res.status(400).json({ error: 'Укажите move' });
+    const r = await db('SELECT id, fen, solution FROM puzzles WHERE id=$1', [req.params.id]);
+    if (!r.rows[0]) return res.status(404).json({ error: 'Задача не найдена' });
     const user = await getUser(req.user.username.toLowerCase());
     if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
 
-    const existing = await db('SELECT correct FROM puzzle_attempts WHERE user_id=$1 AND puzzle_id=$2', [user.id, puzzle.id]);
-    const alreadySolved = existing.rows[0]?.correct;
+    const out = await puzzleService.handleMove(user.id, r.rows[0], move, moveIndex);
+    // Решение клиенту НИКОГДА не уходит — только верно/неверно и ответный ход.
+    if (out.status === 'restart') return res.json({ correct: false, restart: true });
+    if (out.status === 'illegal') return res.json({ correct: false, illegal: true });
+    if (out.status === 'done')    return res.json({ correct: false, finished: true });
 
-    if (!alreadySolved) {
-      await db(`INSERT INTO puzzle_attempts (id,user_id,puzzle_id,correct,created_at) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (user_id,puzzle_id) DO UPDATE SET correct=$4,created_at=$5`, [uuidv4(), user.id, puzzle.id, correct, Date.now()]);
-      await db('UPDATE puzzles SET play_count=play_count+1 WHERE id=$1', [puzzle.id]);
-      if (correct) await db('UPDATE puzzles SET correct_count=correct_count+1 WHERE id=$1', [puzzle.id]);
-      const ratingDelta = correct ? 15 : -10;
-      const newRating    = Math.max(100, (user.puzzle_rating || 1200) + ratingDelta);
-      const newSolved    = (user.puzzle_solved || 0) + (correct ? 1 : 0);
-      const newAttempted = (user.puzzle_attempted || 0) + 1;
-      await db('UPDATE users SET puzzle_rating=$1,puzzle_solved=$2,puzzle_attempted=$3 WHERE id=$4', [newRating, newSolved, newAttempted, user.id]);
-      user.puzzle_rating = newRating; user.puzzle_solved = newSolved; user.puzzle_attempted = newAttempted;
-      cacheUser(user);
-      return res.json({ correct, solution: puzzle.solution, ratingDelta, newPuzzleRating: newRating, alreadySolved: false });
+    const payload = { correct: out.correct, autoMove: out.autoMove, finished: out.finished };
+    if (out.rating) {
+      const rt = out.rating;
+      if (rt.userRow) {
+        user.puzzle_rating    = rt.userRow.puzzle_rating;
+        user.puzzle_solved    = rt.userRow.puzzle_solved;
+        user.puzzle_attempted = rt.userRow.puzzle_attempted;
+        cacheUser(user);
+      }
+      payload.rating = { rated: true, delta: rt.delta, newRating: rt.newRating, rd: rt.rd };
+      // Совместимость со старым клиентом из кэша браузера:
+      payload.ratingDelta = rt.delta;
+      payload.newPuzzleRating = rt.newRating;
     }
-    res.json({ correct: true, solution: puzzle.solution, ratingDelta: 0, newPuzzleRating: user.puzzle_rating || 1200, alreadySolved: true });
+    res.json(payload);
+  } catch(e) { console.error('[Puzzle move]', e.message); res.status(500).json({ error: 'Ошибка' }); }
+});
+
+// Устаревший эндпоинт: раньше клиент присылал список ходов и сам «сообщал»
+// результат (и получал в ответ решение). Теперь он ничего не судит — просто
+// отдаёт итог серверной сессии, чтобы старый клиент из кэша не ломался.
+// Можно удалить через пару дней после выкладки нового app.js.
+app.post('/api/puzzles/:id/attempt', authMiddleware, rateLimit(limiterStrict), async (req, res) => {
+  try {
+    const user = await getUser(req.user.username.toLowerCase());
+    if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
+    const sr = puzzleService.getSessionResult(user.id, req.params.id);
+    const rt = sr && sr.rating;
+    res.json({
+      correct: !!(sr && sr.finished),
+      ratingDelta: rt ? rt.delta : 0,
+      newPuzzleRating: rt ? rt.newRating : (user.puzzle_rating || 1200),
+      alreadySolved: !!(sr && sr.finished && !rt),
+    });
   } catch(e) { console.error('[Puzzle attempt]', e.message); res.status(500).json({ error: 'Ошибка' }); }
 });
 
 
 // ══════════════════════════════════════════════════════════════
-//  PUZZLE STORM API
+//  PUZZLE STORM API — старый анонимный эндпоинт с УТЕЧКОЙ РЕШЕНИЙ
+
 // ══════════════════════════════════════════════════════════════
-app.get('/api/storm/puzzles', async (req, res) => {
-  try {
-    const topicsParam = req.query.topics || 'mate1,mate2';
-    const topics = topicsParam.split(',').map(t => t.trim()).filter(Boolean);
-    const placeholders = topics.map((_, i) => `$${i + 1}`).join(',');
-    const r = await db(`SELECT id,fen,solution,topic,difficulty FROM puzzles WHERE topic IN (${placeholders}) ORDER BY RANDOM() LIMIT 80`, topics);
-    res.json(r.rows);
-  } catch(e) { res.status(500).json({ error: 'Ошибка' }); }
-});
+//  PUZZLE STORM API
+//
 
 app.post('/api/storm/start', authMiddleware, rateLimit(limiterStrict), async (req, res) => {
   const runId = uuidv4();
-  stormRuns.set(runId, { userId: req.user.userId, startedAt: Date.now() });
+  stormRuns.set(runId, {
+    userId:      req.user.userId,
+    username:    req.user.username,
+    startedAt:   Date.now(),
+    // puzzleId -> { playerMoves, autoMoves, step, done }
+    answers:     new Map(),
+    solvedCount: 0,
+    wrongSet:    new Set(),
+    // защита от двойной отправки финиша
+    finished:    false,
+  });
   res.json({ runId });
+});
+
+app.get('/api/storm/puzzles', authMiddleware, async (req, res) => {
+  try {
+    const { runId } = req.query;
+    const run = typeof runId === 'string' ? stormRuns.get(runId) : null;
+    if (!run || run.userId !== req.user.userId) {
+      return res.status(400).json({ error: 'Забег не найден. Начните игру заново.' });
+    }
+    const topicsParam = req.query.topics || 'mate1,mate2';
+    const topics = topicsParam.split(',').map(t => t.trim()).filter(Boolean).slice(0, 8);
+    if (!topics.length) return res.status(400).json({ error: 'Неверные темы' });
+    const placeholders = topics.map((_, i) => `$${i + 1}`).join(',');
+    const r = await db(`SELECT id,fen,solution,topic,difficulty FROM puzzles WHERE topic IN (${placeholders}) ORDER BY RANDOM() LIMIT 80`, topics);
+    // Решения остаются на сервере — клиенту уезжает только игровое поле.
+    // movesCount нужен лишь для подписи «Мат в 1/2 хода» в интерфейсе.
+    const puzzles = r.rows.map(row => {
+      const { playerMoves, autoMoves } = parsePuzzleSolution(row.solution);
+      run.answers.set(row.id, {
+        fen: row.fen,        // текущая позиция: сервер ведёт её сам (нужна для проверки мата)
+        playerMoves,
+        autoMoves,
+        step: 0,
+        done: false,
+      });
+      return { id: row.id, fen: row.fen, topic: row.topic, difficulty: row.difficulty, movesCount: playerMoves.length };
+    });
+    res.json(puzzles);
+  } catch(e) { console.error('[Storm puzzles]', e.message); res.status(500).json({ error: 'Ошибка' }); }
+});
+
+// Один ход игрока: сервер проверяет по решению и сам ведёт счёт.
+app.post('/api/storm/move', authMiddleware, rateLimit(limiterStrict), async (req, res) => {
+  try {
+    const { runId, puzzleId, uci } = req.body || {};
+    if (typeof runId !== 'string' || typeof puzzleId !== 'string' || typeof uci !== 'string') {
+      return res.status(400).json({ error: 'Неверные данные' });
+    }
+    // UCI вида e2e4 / e7e8q — ничего больше не принимаем.
+    if (!/^[a-h][1-8][a-h][1-8][qrbn]?$/.test(uci)) {
+      return res.status(400).json({ error: 'Неверный формат хода' });
+    }
+    const run = stormRuns.get(runId);
+    if (!run || run.userId !== req.user.userId) {
+      return res.status(400).json({ error: 'Забег не найден. Начните игру заново.' });
+    }
+    const p = run.answers.get(puzzleId);
+    if (!p) return res.status(400).json({ error: 'Задача не из этого забега' });
+
+    if (p.done) return res.json({ correct: false, finished: true });
+
+    // Ход судит сервер по реальной позиции: совпал с решением ИЛИ ставит мат.
+    const expectedRaw = p.playerMoves[p.step];
+    const j = puzzleService.judgeSolverMove(p.fen, uci, expectedRaw);
+    let isCorrect, isMate = false, canon = uci.toLowerCase().trim();
+    if (j.fallback) {
+      isCorrect = puzzleService.legacyMatch(uci, expectedRaw);   // chess.js не разобрал FEN
+    } else if (!j.legal) {
+      return res.json({ correct: false, illegal: true });        // невозможный ход — не засчитываем и не штрафуем
+    } else {
+      isCorrect = j.matches || j.mate;
+      isMate = j.mate;
+      canon = j.canon;
+    }
+
+    if (!isCorrect) {
+      // Ошибка в задаче засчитывается один раз (клиент после неё уходит
+      // к следующей задаче, но досылы/дубли не должны раздувать счёт).
+      if (!run.wrongSet.has(puzzleId)) run.wrongSet.add(puzzleId);
+      return res.json({ correct: false });
+    }
+
+    p.step++;
+    let autoMove = p.autoMoves[p.step - 1] || null;
+    let finished = isMate || p.step >= p.playerMoves.length;
+    if (!finished && !j.fallback) {
+      const nextFen = autoMove ? puzzleService.applyUci(j.fenAfter, autoMove) : null;
+      if (nextFen) p.fen = nextFen;
+      else { autoMove = null; finished = true; }   // в данных ход соперника невозможен
+    }
+    if (finished) { autoMove = null; p.done = true; run.solvedCount++; }
+    return res.json({ correct: true, canon, autoMove, finished });
+  } catch(e) { console.error('[Storm move]', e.message); res.status(500).json({ error: 'Ошибка' }); }
 });
 
 app.post('/api/storm/finish', authMiddleware, rateLimit(limiterStrict), async (req, res) => {
   try {
     const { score, totalAttempted, correct, wrong, timeBonus, runId } = req.body;
-    if (typeof score !== 'number' || score < 0) return res.status(400).json({ error: 'Неверный score' });
-    if (typeof correct !== 'number' || typeof wrong !== 'number' || correct < 0 || wrong < 0) {
-      return res.status(400).json({ error: 'Неверные данные' });
+    for (const v of [score, totalAttempted, correct, wrong, timeBonus]) {
+      if (v !== undefined && !Number.isFinite(Number(v))) return res.status(400).json({ error: 'Неверные данные' });
     }
 
-    // ── Проверка на подделку результата ──
+    // ── Авторитетный подсчёт результата ──
     // 1) Забег должен быть начат через /api/storm/start этим же пользователем.
     const run = typeof runId === 'string' ? stormRuns.get(runId) : null;
     if (!run || run.userId !== req.user.userId) {
       return res.status(400).json({ error: 'Забег не найден. Начните игру заново.' });
     }
+    if (run.finished) return res.status(400).json({ error: 'Забег уже завершён' });
+    run.finished = true;
     stormRuns.delete(runId); // одноразовый — повторно этот runId использовать нельзя
 
     const elapsedMs = Date.now() - run.startedAt;
@@ -3903,25 +4019,25 @@ app.post('/api/storm/finish', authMiddleware, rateLimit(limiterStrict), async (r
     if (elapsedMs > STORM_MAX_TIME_MS) {
       return res.status(400).json({ error: 'Забег просрочен' });
     }
-    // 3) score всегда равен correct (1 очко за решённую задачу) — так считает клиент.
-    if (score !== correct) {
-      return res.status(400).json({ error: 'Результат не прошёл проверку' });
-    }
+
+    // 3) Очки — ТОЛЬКО серверные счётчики (клиентские score/correct игнорируются).
+    const finalScore   = run.solvedCount;
+    const finalWrong   = run.wrongSet.size;
     // 4) Нельзя решить больше задач, чем физически влезает во время игры.
     const maxPossible = Math.floor(elapsedMs / STORM_MIN_MS_PER_PUZZLE);
-    if (correct + wrong > maxPossible) {
+    if (finalScore + finalWrong > maxPossible) {
       return res.status(400).json({ error: 'Результат не прошёл проверку' });
     }
 
     const user = await getUser(req.user.username.toLowerCase());
     if (!user) return res.status(404).json({ error: 'Не найден' });
-    await db(`INSERT INTO puzzle_storm_runs (id,user_id,username,score,total_attempted,correct,wrong,time_bonus,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`, [uuidv4(), user.id, user.username, score, totalAttempted||0, correct||0, wrong||0, timeBonus||0, Date.now()]);
-    const isBest  = score > (user.storm_best || 0);
-    const newBest = isBest ? score : (user.storm_best || 0);
+    await db(`INSERT INTO puzzle_storm_runs (id,user_id,username,score,total_attempted,correct,wrong,time_bonus,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`, [uuidv4(), user.id, user.username, finalScore, finalScore + finalWrong, finalScore, finalWrong, Math.min(600, Number(timeBonus) || 0), Date.now()]);
+    const isBest  = finalScore > (user.storm_best || 0);
+    const newBest = isBest ? finalScore : (user.storm_best || 0);
     const newRuns = (user.storm_runs || 0) + 1;
     await db('UPDATE users SET storm_best=$1,storm_runs=$2 WHERE id=$3', [newBest, newRuns, user.id]);
     user.storm_best = newBest; user.storm_runs = newRuns; cacheUser(user);
-    res.json({ ok:true, isBest, newBest, totalRuns:newRuns });
+    res.json({ ok:true, isBest, newBest, totalRuns:newRuns, score: finalScore, correct: finalScore, wrong: finalWrong });
   } catch(e) { console.error('[Storm finish]',e.message); res.status(500).json({ error: 'Ошибка' }); }
 });
 
@@ -3959,7 +4075,7 @@ app.post('/api/admin/puzzles/:id/delete', authMiddleware, handleDeletePuzzle);
 
 
 // ── Статичные HTML страницы ───────────────────────────────────
-app.get('/profile', (req, res) => res.sendFile(path.join(__dirname, '../public/index.html')));
+app.get('/profile', (req, res) => res.sendFile(path.join(__dirname, '../public/profile.html')));
 
 app.get('/settings', (req, res) => res.sendFile(path.join(__dirname, '../public/settings.html')));
 
@@ -4006,8 +4122,31 @@ app.get('/age', (req, res) => { res.sendFile(path.join(__dirname, '../public', '
 app.get('/online', (req, res) => res.sendFile(path.join(__dirname, '../public/online.html')));
 
 
+// ── /api/stats: тяжёлая выборка (24 запроса к БД) — кэшируем на 60 секунд ──
+// Без кэша каждый заход на /stats (в том числе ботов) занимал почти весь пул
+// соединений (30), и остальные запросы сайта ждали или падали по таймауту.
+const STATS_TTL_MS = 60_000;
+let statsCache = { ts: 0, data: null, pending: null };
+
 app.get('/api/stats', async (req, res) => {
   try {
+    if (statsCache.data && Date.now() - statsCache.ts < STATS_TTL_MS) return res.json(statsCache.data);
+    // Одновременные запросы делят одну пересборку, а не запускают по 24 запроса каждый
+    if (!statsCache.pending) {
+      statsCache.pending = buildStats().finally(() => { statsCache.pending = null; });
+    }
+    const data = await statsCache.pending;
+    statsCache.data = data;
+    statsCache.ts = Date.now();
+    res.json(data);
+  } catch (e) {
+    console.error('[Stats]', e.message);
+    if (statsCache.data) return res.json(statsCache.data);   // при сбое БД — прошлая версия
+    res.status(500).json({ error: 'Ошибка' });
+  }
+});
+
+async function buildStats() {
     const FOUNDED = new Date('2026-03-30T00:00:00Z');
     const daysAlive = Math.floor((Date.now() - FOUNDED.getTime()) / 86400000);
 
@@ -4039,11 +4178,12 @@ app.get('/api/stats', async (req, res) => {
     ]);
 
     const totalMessages = parseInt(dm.rows[0].count) + parseInt(chat.rows[0].count) + parseInt(clubChat.rows[0].count);
+    const deletedUsers = await countDeletedUsers();   // удалённые аккаунты остаются в общем счётчике
 
-    res.json({
+    return ({
       meta: { daysAlive, founded: '30.03.2026' },
       totals: {
-        users: parseInt(users.rows[0].count), games: parseInt(games.rows[0].count), messages: totalMessages,
+        users: parseInt(users.rows[0].count) + deletedUsers, deletedUsers, games: parseInt(games.rows[0].count), messages: totalMessages,
         dmMessages: parseInt(dm.rows[0].count), chatMessages: parseInt(chat.rows[0].count), clubMessages: parseInt(clubChat.rows[0].count),
         blogPosts: parseInt(blogPosts.rows[0].count), blogComments: parseInt(blogComments.rows[0].count),
         blogLikes: parseInt(blogLikes.rows[0].count), blogViews: parseInt(blogViews.rows[0].count),
@@ -4055,9 +4195,7 @@ app.get('/api/stats', async (req, res) => {
       charts: { gamesByTC: gamesByTC.rows, gamesByResult: gamesByResult.rows, regByDay: registrationsByDay.rows, gamesByDay: gamesByDay.rows },
       misc: { avgGameMoves: Math.round(parseFloat(avgGameMoves.rows[0]?.avg) || 0), puzzleSuccessRate: puzzleAttempts.rows[0].count > 0 ? Math.round(parseInt(puzzleSolved.rows[0].count) / parseInt(puzzleAttempts.rows[0].count) * 100) : 0 }
     });
-  } catch(e) { console.error('[Stats]', e.message); res.status(500).json({ error: 'Ошибка' }); }
-});
-
+}
 
 
 // ── Dev Diary API ───────────────────────────────────────────
@@ -4171,13 +4309,16 @@ app.get('/api/dev-diary/:entryId/comments', async (req, res) => {
     const page  = Math.max(1, parseInt(req.query.page) || 1);
     const limit = 20;
     const offset = (page - 1) * limit;
-    const totalR = await db(`SELECT COUNT(*) AS total FROM dev_diary_comments WHERE entry_id=$1`, [req.params.entryId]);
+    // Комментарии забаненных / тенево-забаненных / «забаненных в дневнике» видит
+    // только их автор и админы — для всех остальных их как будто нет.
+    const hidden = await moderation.commentExclusions(req, 'diary');
+    const totalR = await db(`SELECT COUNT(*) AS total FROM dev_diary_comments WHERE entry_id=$1 AND username_low <> ALL($2::text[])`, [req.params.entryId, hidden]);
     const total = parseInt(totalR.rows[0].total);
     const rows = await db(
       `SELECT id, entry_id, username, content, created_at
-       FROM dev_diary_comments WHERE entry_id=$1
+       FROM dev_diary_comments WHERE entry_id=$1 AND username_low <> ALL($4::text[])
        ORDER BY created_at ASC LIMIT $2 OFFSET $3`,
-      [req.params.entryId, limit, offset]
+      [req.params.entryId, limit, offset, hidden]
     );
     res.json({
       comments: rows.rows.map(r => ({ id: r.id, username: r.username, content: r.content, createdAt: Number(r.created_at) })),
@@ -4191,11 +4332,9 @@ app.post('/api/dev-diary/:entryId/comments', authMiddleware, async (req, res) =>
   try {
     const user = await getUser(req.user.username.toLowerCase());
     if (!user) return res.status(401).json({ error: 'Не авторизован' });
-    if (user.banned) return res.status(403).json({ error: 'Вы заблокированы' });
-
-    // Проверяем бан на комментарии в дневнике
-    const banR = await db(`SELECT 1 FROM dev_diary_comment_bans WHERE username_low=$1`, [user.username.toLowerCase()]);
-    if (banR.rows.length) return res.status(403).json({ error: 'Вам запрещено оставлять комментарии в дневнике' });
+    // Бан / теневой бан / бан комментариев дневника: человеку НЕ говорим об этом —
+    // комментарий публикуется как обычно, но видит его только он сам и админы
+    // (фильтрация — в GET выше, через moderation.commentExclusions).
 
     // Лимит 5 в день
     const dayStart = Date.now() - 24 * 60 * 60 * 1000;
@@ -4209,6 +4348,7 @@ app.post('/api/dev-diary/:entryId/comments', authMiddleware, async (req, res) =>
     if (!content || !content.trim()) return res.status(400).json({ error: 'Пустой комментарий' });
     if (content.length > 500) return res.status(400).json({ error: 'Комментарий не длиннее 500 символов' });
 
+    moderation.record({ username: user.username, channel: 'dev-diary', text: content });
     const id = require('crypto').randomUUID();
     await db(`INSERT INTO dev_diary_comments (id, entry_id, username, username_low, content, created_at) VALUES ($1,$2,$3,$4,$5,$6)`,
       [id, req.params.entryId, user.username, user.username.toLowerCase(), content.trim(), Date.now()]);
@@ -4243,6 +4383,9 @@ app.post('/api/admin/dev-diary-comment-ban', authMiddleware, async (req, res) =>
 
 app.get('/game/:gameId', async (req, res) => {
   const gameId = req.params.gameId;
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(gameId)) {
+    return res.status(404).send('Игра не найдена');
+  }
   // Получаем данные игры через API (переиспользуем логику)
   let game = activeGames.get(gameId);
   if (!game) {
@@ -4273,16 +4416,24 @@ app.get('/game/:gameId', async (req, res) => {
     }
   }
 
-  // Простая страница просмотра партии
-  const movesJson = JSON.stringify(game.moves || []);
+  const jsonForInline = (v) => JSON.stringify(v)
+    .replace(/</g, '\\u003c')
+    .replace(/>/g, '\\u003e')
+    .replace(/&/g, '\\u0026')
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029');
+  const movesJson = jsonForInline(game.moves || []);
+  const titleWhite = escapeHtml(game.white);
+  const titleBlack = escapeHtml(game.black);
+  const reasonSafe = escapeHtml(game.reason);
   res.send(`
     <!DOCTYPE html>
     <html>
     <head>
       <meta charset="UTF-8">
       <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      <title>Партия · ${game.white} vs ${game.black}</title>
-      <link href="https://cdn.jsdelivr.net/npm/@chrisoakman/chessboard2@0.5.0/dist/chessboard2.min.css" rel="stylesheet">
+      <title>Партия · ${titleWhite} vs ${titleBlack}</title>
+      <link href="/css/vendor/chessboard2.min.css" rel="stylesheet">
       <style>
         body { font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; background: #1a1a2e; color: #e0e0e0; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; padding: 20px; }
         .container { max-width: 700px; width: 100%; background: #0f0f1e; border-radius: 20px; padding: 24px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
@@ -4307,7 +4458,7 @@ app.get('/game/:gameId', async (req, res) => {
         </div>
         <div style="text-align:center; margin-bottom:12px">
           <span class="result">${formatGameResult(game.result, game.white, game.black)}</span>
-          ${game.reason ? `<span style="margin-left:12px;color:#aaa">(${game.reason})</span>` : ''}
+          ${game.reason ? `<span style="margin-left:12px;color:#aaa">(${reasonSafe})</span>` : ''}
         </div>
         <div id="board"></div>
         <div class="controls">
@@ -4318,16 +4469,16 @@ app.get('/game/:gameId', async (req, res) => {
         <div class="move-list" id="moveList"></div>
       </div>
 
-      <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
-      <script src="https://cdn.jsdelivr.net/npm/@chrisoakman/chessboard2@0.5.0/dist/chessboard2.min.js"></script>
+      <script src="/js/vendor/chess.js"></script>
+      <script src="/js/vendor/chessboard2.min.js"></script>
       <script>
         const moves = ${movesJson};
-        const gameId = "${gameId}";
-        const gameWhite = ${JSON.stringify(game.white)};
-        const gameBlack = ${JSON.stringify(game.black)};
-        const gameResult = ${JSON.stringify(game.result || null)};
-        const gameEndedAt = ${JSON.stringify(game.endedAt || null)};
-        const gameTournamentName = ${JSON.stringify(game.tournamentName || null)};
+        const gameId = ${jsonForInline(gameId)};
+        const gameWhite = ${jsonForInline(game.white)};
+        const gameBlack = ${jsonForInline(game.black)};
+        const gameResult = ${jsonForInline(game.result || null)};
+        const gameEndedAt = ${jsonForInline(game.endedAt || null)};
+        const gameTournamentName = ${jsonForInline(game.tournamentName || null)};
         const boardEl = document.getElementById('board');
         let currentIndex = 0;
         let gameState = new Chess();
@@ -4339,7 +4490,7 @@ app.get('/game/:gameId', async (req, res) => {
             const from = numberToAlgebraic(mv.from);
             const to = numberToAlgebraic(mv.to);
             const promotion = mv.promotion ? mv.promotion.toLowerCase() : undefined;
-            gameState.move({ from, to, promotion });
+            try { gameState.move({ from, to, promotion }); } catch (e) { /* пропускаем битые записи */ }
           }
           if (board) { try { board.position(gameState.fen()); } catch(e) {} }
         }
@@ -4396,7 +4547,7 @@ app.get('/game/:gameId', async (req, res) => {
             const from = numberToAlgebraic(mv.from);
             const to = numberToAlgebraic(mv.to);
             const promotion = mv.promotion ? mv.promotion.toLowerCase() : undefined;
-            pgnGame.move({ from, to, promotion });
+            try { pgnGame.move({ from, to, promotion }); } catch (e) { /* пропускаем битые записи */ }
           }
           let pgn = '';
           for (const [key, value] of Object.entries(headers)) {
@@ -4425,7 +4576,7 @@ app.get('/game/:gameId', async (req, res) => {
         window.addEventListener('DOMContentLoaded', () => {
           try {
             if (typeof Chessboard2 !== 'undefined') {
-              board = Chessboard2('board', { position: 'start', draggable: false });
+              board = Chessboard2('board', { position: 'start', draggable: false, pieceTheme: '/img/pieces/{piece}.svg' });
             } else {
               document.getElementById('board').innerHTML = '<div style="text-align:center;color:#aaa;padding:20px">Доска недоступна (ошибка загрузки библиотеки), но ходы и PGN доступны</div>';
             }
@@ -4443,15 +4594,21 @@ app.get('/game/:gameId', async (req, res) => {
     </html>
   `);
 
-  function escapeHtml(str) { return String(str || '').replace(/[&<>]/g, function(m) { if (m === '&') return '&amp;'; if (m === '<') return '&lt;'; if (m === '>') return '&gt;'; return m; }); }
+  // Единая безопасная реализация экранирования (P0, унификация escapeHtml)
+  // импортирована из server/utils.js — экранирует ВСЕ пять спецсимволов HTML,
+  // включая кавычки ' и ".
+  // XSS (P0): ники игроков вставляются в сгенерированную HTML-страницу —
+  // обязаны проходить через escapeHtml, иначе ник вида
+  // `<img src=x onerror=...>` исполнялся бы в браузере у любого открывшего.
   function formatGameResult(result, white, black) {
-    if (result === 'white') return `🏆 ${white} победил`;
-    if (result === 'black') return `🏆 ${black} победил`;
+    const safeWhite = escapeHtml(white);
+    const safeBlack = escapeHtml(black);
+    if (result === 'white') return `🏆 ${safeWhite} победил`;
+    if (result === 'black') return `🏆 ${safeBlack} победил`;
     if (result === 'draw') return `🤝 Ничья`;
     return `Партия завершена`;
   }
 });
-
 
 
 app.get('*', (req, res) => {

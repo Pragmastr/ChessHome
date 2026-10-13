@@ -2,9 +2,22 @@
 //  Chess Home — Главный файл приложения
 // ══════════════════════════════════════════════════════════════
 
-const API = '/api';
+// HTTP-клиент (apiGet/apiPost/parseApiResponse) и фильтр чата
+// (MAT_WORDS/SPAM_WORDS/normalizeWord/normalize/containsBadWords)
+// вынесены в общие модули /js/api.js и /js/utils.js (2А, 2В — унификация):
+// index.html подключает их до app.js, глобальные имена доступны и здесь.
+
 let socket = null;
 let currentUser = null;
+
+// i18n-хелпер: словарь может быть ещё не загружен — тогда русский fallback
+function T(key, fallback) {
+  try {
+    const v = window.CH_I18N ? window.CH_I18N.t(key) : undefined;
+    if (v && v !== key) return v;
+  } catch (e) { /* i18n недоступен */ }
+  return fallback !== undefined ? fallback : key;
+}
 
 function toggleLoginPasswordVisibility(btn) {
   const input = document.getElementById('login-password');
@@ -23,91 +36,15 @@ function toggleLoginPasswordVisibility(btn) {
 const STREAMERS = ['VLAD', 'Solo', 'aaa', 'GGbers'];
 
 
-
 // ─── ФИЛЬТР ЧАТА ───────────────────────────────────────────
 // Мат / реальные ругательства. Убрал сюда генерические оскорбления
 // ("дебил","идиот","тварь","урод","мразь","чмо","аутист","даун",
 // "жиробас") — это токсичность, а не мат, они были причиной того что
 // фильтр казался слишком строгим. Настоящие ругательства остаются
 // под запретом.
-const MAT_WORDS = [
-  'блять','блядь','бля','пиздец','пизда','пизду','пизды',
-  'сука','сучка','хуй','хуе','хер',
-  'ебать','ебал','ебан','ебаный','ебло','еблан','ебуч','заеб','выеб',
-  'нахуй','нахер','похуй','похер',
-  'гандон','долбоеб','долбоёб','далбаеб','далбоеб','далбоёб','мудак',
-  'шлюха','шлюх','шалава','проститутка',
-  'соси','сосать','отсоси','сраный','обосранный','пздц',
-  'порн','влагалище','секс','сэкс','дрочка','пидор',
-  // англ
-  'fuck','fucking','bitch','asshole','dick','shit',
-];
-
-// Спам / казино / ставки / реклама — тут по-прежнему ищем максимально
-// агрессивно (в одну сплошную строку без пробелов), чтобы ловить обход
-// фильтра вставкой пробелов и точек: "к а з и н о", "т . м е" и т.п.
-// Ложных срабатываний на обычные слова тут не бывает (это не мат-корни).
-const SPAM_WORDS = [
-  'казино','casino','ставки','ставка','bet','букмекер',
-  '1xbet','melbet','parimatch','fonbet',
-  'aviator','crash',
-  'выигрыш','джекпот','бонус','бонусы','промокод','депозит',
-  'фриспины','free spin',
-  'прогноз','договорной матч',
-  'http://','https://','www.',
-  't.me','telegram','discord','discord.gg',
-  'vk.com','instagram.com','tiktok.com',
-  'легкие деньги', 'http','https','www','tme','discordgg'
-];
-
-// Замены букв/цифр для обхода фильтра (leetspeak) — без удаления
-// пробелов, чтобы можно было отдельно проверять по словам.
-function normalizeWord(text) {
-  return text
-    .toLowerCase()
-    .replace(/ё/g, 'е')
-    .replace(/[@]/g, 'a')
-    .replace(/[0]/g, 'o')
-    .replace(/[3]/g, 'e')
-    .replace(/[1!]/g, 'i')
-    .replace(/9/g, 'я')
-    .replace(/6/g, 'б')
-    .replace(/4/g, 'ч');
-}
-
-// Старая агрессивная нормализация (для спам/казино-проверки): убираем
-// вообще все пробелы и небуквенные символы, чтобы ловить обход через
-// расстановку пробелов между буквами.
-function normalize(text) {
-  return normalizeWord(text)
-    .replace(/\s+/g, '')
-    .replace(/[^a-zа-я0-9]/gi, '');
-}
-
-function containsBadWords(text) {
-  // 1) Спам/казино/ссылки — как и раньше, где угодно в склеенной строке.
-  const collapsed = normalize(text);
-  if (SPAM_WORDS.some(word => collapsed.includes(normalize(word)))) return true;
-
-  // 2) Мат — проверяем по отдельным словам, а не по случайной подстроке
-  //    посреди текста. Короткие корни (3 буквы и меньше, типа "бля",
-  //    "хер") ловим ТОЛЬКО как начало слова — иначе словим "рубля",
-  //    "сабля", "кораблях" и подобные ни при чём не виноватые слова,
-  //    которые просто ЗАКАНЧИВАются на такое сочетание букв. Более
-  //    длинные и однозначные корни ("блять","пиздец","ебаный"...)
-  //    по-прежнему ищем где угодно внутри слова — это по-прежнему
-  //    ловит приставочные формы вроде "разъебали".
-  const tokens = normalizeWord(text).replace(/[^a-zа-я0-9\s]/gi, '').split(/\s+/).filter(Boolean);
-  return MAT_WORDS.some(rawWord => {
-    const word = normalizeWord(rawWord).replace(/[^a-zа-я0-9]/gi, '');
-    if (!word) return false;
-    // "хер" отдельно — только точное совпадение слова целиком, иначе
-    // ловит "Херсон", "херувим" и подобные ни при чём не виноватые слова.
-    if (word === 'хер') return tokens.includes(word);
-    if (word.length <= 3) return tokens.some(t => t.startsWith(word));
-    return tokens.some(t => t.includes(word));
-  });
-}
+// ФИЛЬТР ЧАТА (MAT_WORDS/SPAM_WORDS/normalizeWord/normalize/
+// containsBadWords) вынесен в /js/utils.js (2В, унификация) —
+// единая реализация работает и в лобби, и в клубах.
 
 // ─── ROUTER ───────────────────────────────────────────────────
 const pages = {};
@@ -144,52 +81,10 @@ function showPage(name) {
 }
 
 // ─── API ──────────────────────────────────────────────────────
-// Сервер иногда может ответить не JSON'ом (HTML-страница от прокси/
-// хостинга при 502/503, таймаут и т.п.) — раньше res.json() в таком
-// случае падал с "Unexpected token '<', ... is not valid JSON" и
-// пользователь видел эту техническую абракадабру вместо понятной ошибки.
-async function parseApiResponse(res) {
-  const text = await res.text();
-  let data;
-  try {
-    data = text ? JSON.parse(text) : {};
-  } catch (e) {
-    throw new Error('Сервер временно недоступен. Попробуйте ещё раз через минуту.');
-  }
-  if (!res.ok) {
-    const err = new Error(data.error || 'Ошибка');
-    throw err;
-  }
-  return data;
-}
-
-async function apiPost(path, body) {
-  const res = await fetch(API + path, {
-    method: 'POST',
-    credentials: 'same-origin', // отправляет HttpOnly cookie ch_token / ch_device_id
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body)
-  });
-  return parseApiResponse(res);
-}
-
-async function apiGet(path) {
-  const res = await fetch(API + path, { credentials: 'same-origin' });
-  return parseApiResponse(res);
-}
+// apiGet/apiPost/parseApiResponse вынесены в /js/api.js (2А, унификация):
+// единый HTTP-клиент для SPA и всех standalone-страниц.
 
 // ─── TOAST ────────────────────────────────────────────────────
-function toast(msg, type = 'info') {
-  const container = document.getElementById('toast-container');
-  const el = document.createElement('div');
-  el.className = `toast ${type}`;
-  el.innerHTML = `<span>${{ success: '✓', error: '✗', info: 'ℹ' }[type] || 'ℹ'}</span><span>${msg}</span>`;
-  container.appendChild(el);
-  setTimeout(() => {
-    el.style.opacity = '0'; el.style.transform = 'translateX(30px)'; el.style.transition = '0.3s';
-    setTimeout(() => el.remove(), 300);
-  }, 3000);
-}
 
 // ─── AUTH ──────────────────────────────────────────────────────
 function updateAuthUI() {
@@ -206,10 +101,8 @@ function updateAuthUI() {
   setTimeout(updateAuthUI, 50);
 }
 
-function toggleUserMenu()  { document.getElementById('ch-udrop')?.classList.toggle('open'); }
-function closeUserMenu()   { document.getElementById('ch-udrop')?.classList.remove('open'); }
-
-document.addEventListener('click', (e) => { if (!e.target.closest('#ch-user-wrap') && !e.target.closest('.user-menu')) closeUserMenu(); });
+// Мёртвые функции дропдауна toggleUserMenu/closeUserMenu УДАЛЕНЫ:
+// элемент #ch-udrop и его обработчики — в header.js.
 
 async function handleRegister(e) {
   e.preventDefault();
@@ -252,12 +145,6 @@ async function handleLogin(e) {
 
   try {
     const data = await apiPost('/login', { username, password });
-    // Пароль верный, но у аккаунта включена 2FA — токен ещё не выдан,
-    // сервер ждёт код с почты. Показываем шаг ввода кода вместо закрытия модалки.
-    if (data.twoFactorRequired) {
-      showLoginTwoFactorStep(data.message);
-      return;
-    }
     currentUser = data.user; // сервер уже установил HttpOnly cookie ch_token
     closeModal('modal-login');
     updateAuthUI(); connectSocket();
@@ -270,78 +157,6 @@ async function handleLogin(e) {
   }
 }
 
-// ─── 2FA при входе ───────────────────────────────────────────
-// Пароль уже проверен сервером; здесь только код с почты.
-// Паттерн: сохранить innerHTML модалки → подменить на форму кода → восстановить.
-function showLoginTwoFactorStep(message) {
-  const modal = document.getElementById('modal-login');
-  if (!modal) return;
-  modal._origHTML = modal.innerHTML;
-
-  modal.innerHTML = `
-    <button class="modal-close" onclick="closeModal('modal-login')">✕</button>
-    <div class="login-modal-header">
-      <div class="login-modal-icon">✉️</div>
-      <h2>Код подтверждения</h2>
-      <p class="login-modal-sub">${escapeHtml(message || 'Мы отправили код на вашу почту')}</p>
-    </div>
-    <div style="padding:0 24px 24px">
-      <input id="login-2fa-code" type="text" inputmode="numeric" maxlength="6" placeholder="_ _ _ _ _ _"
-        style="width:100%;font-size:28px;letter-spacing:12px;text-align:center;padding:14px;border:2px solid var(--border);border-radius:8px;background:var(--bg-secondary);color:var(--text);box-sizing:border-box">
-      <div id="login-2fa-error" class="form-error" style="min-height:20px;margin-top:8px"></div>
-      <button type="button" onclick="handleLoginVerify2FA()" class="btn btn-primary" id="login-2fa-submit-btn" style="width:100%;margin-top:16px;padding:12px">
-        <span id="login-2fa-submit-text">Подтвердить</span>
-      </button>
-      <button type="button" onclick="cancelLoginTwoFactor()" class="btn btn-ghost" style="width:100%;margin-top:8px;font-size:13px">← Назад</button>
-    </div>
-  `;
-
-  // Авто-фокус и авто-сабмит при 6 цифрах (как в шаге подтверждения email)
-  setTimeout(() => {
-    const inp = document.getElementById('login-2fa-code');
-    if (inp) {
-      inp.focus();
-      inp.addEventListener('input', () => {
-        if (inp.value.replace(/\D/g, '').length === 6) handleLoginVerify2FA();
-      });
-    }
-  }, 100);
-}
-
-async function handleLoginVerify2FA() {
-  const codeEl = document.getElementById('login-2fa-code');
-  const errEl  = document.getElementById('login-2fa-error');
-  const btn    = document.getElementById('login-2fa-submit-btn');
-  if (!codeEl || !errEl) return;
-  const code = codeEl.value.replace(/\D/g, '');
-  if (code.length !== 6) { errEl.textContent = 'Введите 6-значный код'; return; }
-  errEl.textContent = '';
-  if (btn) { btn.disabled = true; btn.classList.add('loading'); }
-
-  try {
-    const data = await apiPost('/login/verify-2fa', { code });
-    currentUser = data.user; // сервер уже установил HttpOnly cookie ch_token
-    const modal = document.getElementById('modal-login');
-    if (modal) { modal.innerHTML = modal._origHTML || modal.innerHTML; delete modal._origHTML; }
-    closeModal('modal-login');
-    updateAuthUI(); connectSocket();
-    toast('С возвращением, ' + currentUser.username + '! ♟️', 'success');
-    showPage('lobby');
-  } catch (err) {
-    errEl.textContent = err.message;
-  } finally {
-    if (btn) { btn.disabled = false; btn.classList.remove('loading'); }
-  }
-}
-
-function cancelLoginTwoFactor() {
-  const modal = document.getElementById('modal-login');
-  if (!modal || !modal._origHTML) return;
-  modal.innerHTML = modal._origHTML;
-  delete modal._origHTML;
-  const form = modal.querySelector('form');
-  if (form) form.addEventListener('submit', handleLogin);
-}
 // --------------ВЫХОД----------------------------------------------
 
 async function logout() {
@@ -377,6 +192,21 @@ async function refreshCurrentUser() {
 let _socketAuthed = false;
 let _pendingGlobalMsgs = [];
 
+let _pendingGameplayEvents = [];
+function emitGameplayEvent(event, payload) {
+  if (_socketAuthed) { socket.emit(event, payload); return; }
+  if (_pendingGameplayEvents.length < 50) {
+    _pendingGameplayEvents.push({ event, payload });
+  }
+}
+function flushPendingGameplayEvents() {
+  if (!socket || !_socketAuthed) return;
+  while (_pendingGameplayEvents.length) {
+    const { event, payload } = _pendingGameplayEvents.shift();
+    socket.emit(event, payload);
+  }
+}
+
 function connectSocket() {
   if (!currentUser) return;
   socket = io();
@@ -388,6 +218,7 @@ function connectSocket() {
   socket.on('auth_ok', () => {
     _socketAuthed = true;
     flushPendingGlobalMsgs();
+    flushPendingGameplayEvents();
   });
   socket.on('online_count', count => {
   const el = document.getElementById('online-count');
@@ -396,14 +227,6 @@ function connectSocket() {
   socket.on('challenges_update', challenges => renderChallengeList(challenges));
   socket.on('game_start', data => {
     if (data.moves && data.moves.length > 0) {
-      // Реджойн после обрыва связи/перезагрузки. Раньше в ЛЮБОМ случае
-      // показывался баннер "вернуться в партию?" — из-за этого простой
-      // F5 посреди своей же игры выглядел как переход в "просмотрщик":
-      // страница игры уже открыта (URL /game/<id>), а сама партия ещё не
-      // запущена, пока не нажмёшь на баннер. Если мы и так уже находимся
-      // на странице именно этой партии — возвращаем в игру сразу, без
-      // лишнего клика. Баннер оставляем только на случай, если игрок
-      // ушёл на другую страницу (лобби и т.п.) и его нужно спросить.
       if (location.pathname === '/game/' + data.gameId) {
         _rejoinData = data;
         doRejoin();
@@ -428,14 +251,6 @@ function connectSocket() {
   socket.on('opponent_move', (data) => chessBoard.applyOpponentMove(data.move, data.whiteTime, data.blackTime));
   socket.on('move_confirmed', (data) => chessBoard.syncClockFromServer(data.whiteTime, data.blackTime));
   socket.on('move_rejected', (data) => {
-    // БАГ (исправлено): сервер раньше молча игнорировал ход, если, с его
-    // точки зрения, сейчас не ваш ход или он незаконный (см. index.js:
-    // make_move) — а доска у вас уже показывала этот ход как сделанный
-    // (см. board.js:executeMove — ход применяется локально сразу, не
-    // дожидаясь подтверждения). В итоге позиция окончательно расходилась
-    // с сервером, и партия просто зависала: сходить нельзя, время идёт.
-    // Теперь по такому сигналу откатываем доску к реальному, подтверждённому
-    // сервером состоянию партии.
     const reasons = {
       'not-your-turn': 'Ход не принят: рассинхронизация с сервером',
       'illegal-move':  'Ход не принят: незаконный ход',
@@ -443,7 +258,7 @@ function connectSocket() {
     toast(reasons[data.reason] || 'Ход не принят сервером', 'error');
     chessBoard.resyncFromServer(data);
   });
-  socket.on('incoming_challenge', ({ from, socketId, rated }) => showIncomingChallenge(from, socketId, rated));
+  socket.on('incoming_challenge', ({ from, socketId, rated, timeControl }) => showIncomingChallenge(from, socketId, rated, timeControl));
   // ── Анализ через домашний воркер (см. worker-client/) ──────────
   // Сервер прислал сырую UCI-строку от настоящего Stockfish на вашем
   // ПК — просто отдаём её тому же парсеру, что обрабатывает и локальный
@@ -509,8 +324,8 @@ function connectSocket() {
   socket.on('tournament_created', (t) => {
     toast('🎯 Новый турнир: ' + t.name + ' (' + t.timeControl + ')', 'info');
   });
-  socket.on('tournament_finished_notify', (t) => {
-    toast('🏆 Турнир завершён: ' + t.name + '. Победитель: ' + t.winner, 'success');
+  socket.on('tournament_finished', (data) => {
+    toast('🏆 Турнир завершён. Победитель: ' + (data?.winner || '—'), 'success');
   });
 
   socket.on('anticheat_compensation', (data) => {
@@ -548,38 +363,6 @@ function closeMobileNav() {
   if (window.CH) CH.closeMobileNav();
 }
 
-function updateMobileNav() {
-  const userEl = document.getElementById('mobile-nav-user');
-  if (!userEl) return;
-  if (currentUser) {
-    userEl.innerHTML = `
-      <div class="player-avatar" style="width:44px;height:44px;font-size:18px">${currentUser.username[0].toUpperCase()}</div>
-      <div>
-        <div style="font-weight:700;font-size:16px">${escapeHtml(currentUser.username)}</div>
-        <div style="font-size:13px;color:var(--accent)">★ ${currentUser.rating}</div>
-      </div>`;
-    document.getElementById('mobile-profile-link').style.display = '';
-    document.getElementById('mobile-settings-link').style.display = '';
-    document.getElementById('mobile-logout-btn').style.display = '';
-    document.getElementById('mobile-login-btn').style.display = 'none';
-    document.getElementById('mobile-register-btn').style.display = 'none';
-    if (currentUser.role === 'admin') {
-      document.getElementById('mobile-admin-link').style.display = '';
-    }
-  } else {
-    userEl.innerHTML = '<div style="color:var(--text-muted);font-size:14px">Вы не авторизованы</div>';
-    document.getElementById('mobile-profile-link').style.display = 'none';
-    document.getElementById('mobile-settings-link').style.display = 'none';
-    document.getElementById('mobile-logout-btn').style.display = 'none';
-    document.getElementById('mobile-login-btn').style.display = '';
-    document.getElementById('mobile-register-btn').style.display = '';
-  }
-}
-
-function mobileLogout() {
-  closeMobileNav();
-  apiPost('/logout', {}).catch(() => {}).finally(() => window.location.reload());
-}
 
 // Закрывать мобильное меню по Escape и свайпу назад
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeMobileNav(); });
@@ -608,8 +391,6 @@ async function fetchOnline() {
     }
   } catch {}
 }
-
-
 
 
 // ─── LOBBY ────────────────────────────────────────────────────
@@ -722,12 +503,6 @@ function selectRated(rated) {
 function postChallenge() {
   if (!currentUser) { openModal('modal-login'); return; }
   if (!socket) { toast('Нет соединения. Войдите заново.', 'error'); return; }
-  // БАГ (исправлено): та же история, что раньше была в чате (см. sendChatMsg/
-  // sendGlobalChatMsg) — проверка socket.connected иногда ловила долю секунды
-  // штатного переподключения socket.io (например, смена вышки/wifi) и писала
-  // "нет соединения", хотя связь была рабочая. Socket.IO сам буферизует emit
-  // на такой короткий обрыв и отправит его сразу после переподключения —
-  // поэтому просто отправляем, не блокируя по .connected.
   socket.emit('post_challenge', { timeControl: selectedTC, color: selectedColor, rated: selectedRated });
   toast(selectedRated ? 'Вызов выставлен в зал!' : 'Товарищеский вызов выставлен в зал!', 'success');
 }
@@ -743,9 +518,9 @@ function acceptChallenge(id) {
   socket.emit('accept_challenge', id);
 }
 
-function showIncomingChallenge(from, socketId, rated = true) {
+function showIncomingChallenge(from, socketId, rated = true, timeControl = '10+0') {
   const kind = rated === false ? 'товарищескую партию' : 'партию';
-  const accept = confirm(`${from} вызывает вас на ${kind}! Принять?`);
+  const accept = confirm(`${from} вызывает вас на ${kind} (${timeControl})! Принять?`);
   if (accept) socket.emit('accept_direct_challenge', { fromSocketId: socketId, rated });
   else socket.emit('decline_challenge', socketId);
 }
@@ -962,7 +737,7 @@ function challengeUserFromProfile(username) {
   if (!currentUser) { openModal('modal-login'); return; }
   if (!socket) { toast('Нет соединения. Войдите заново.', 'error'); return; }
   const rated = !confirm('Сделать партию товарищеской (без изменения рейтинга)?\n\nОК — товарищеская, Отмена — рейтинговая.');
-  socket.emit('challenge_user', { username, rated });
+  socket.emit('challenge_user', { username, rated, timeControl: selectedTC });
   toast(`Вызов отправлен ${username}!`, 'success');
 }
 
@@ -989,24 +764,6 @@ function challengeUser(username) {
   challengeUserFromProfile(username);
 }
 
-
-if (!sessionStorage.getItem('pageHardReloaded')) {
-    sessionStorage.setItem('pageHardReloaded', 'true');
-
-    setTimeout(() => {
-        // Создаем уникальный маркер времени (timestamp)
-        const cacheBuster = 'nocache=' + new Date().getTime();
-        const currentUrl = window.location.href;
-        
-        // Проверяем, есть ли уже параметры в ссылке, и добавляем маркер
-        const newUrl = currentUrl.indexOf('?') !== -1 
-            ? currentUrl + '&' + cacheBuster 
-            : currentUrl + '?' + cacheBuster;
-
-        // Перенаправляем на "новую" ссылку, очищая кэш
-        window.location.replace(newUrl);
-    }, 1);
-}
 
 // ─── GAME UI ──────────────────────────────────────────────────
 let _currentGameData = null; // текущие данные активной онлайн-игры для реджойна
@@ -1124,8 +881,8 @@ function startGameUI(data) {
     const oppRating = data.opponentRating || '?';
     const topEl    = document.getElementById('rating-top');
     const bottomEl = document.getElementById('rating-bottom');
-    if (topEl)    topEl.textContent    = 'Рейтинг: ' + oppRating;
-    if (bottomEl) bottomEl.textContent = 'Рейтинг: ' + myRating;
+    if (topEl)    topEl.textContent    = chT('game.rating_prefix', 'Рейтинг:') + ' ' + oppRating;
+    if (bottomEl) bottomEl.textContent = chT('game.rating_prefix', 'Рейтинг:') + ' ' + myRating;
 
     // Второй рендер — гарантирует правильный контейнер
     setTimeout(() => chessBoard.render(), 50);
@@ -1169,16 +926,12 @@ function sendChatMsg() {
 
   // Socket.IO сам буферизует emit во время короткого переподключения и
   // отправит сообщение, как только связь восстановится — поэтому здесь
-  // больше НЕ проверяем socket.connected. Раньше из-за этой проверки чат
-  // иногда писал "нет соединения" даже при доле секунды обрыва (смена
-  // сети, сворачивание вкладки и т.п.), хотя интернет был в порядке.
-  socket.emit('game_chat', { gameId: chessBoard.gameId, message: msg });
+  emitGameplayEvent('game_chat', { gameId: chessBoard.gameId, message: msg });
   appendChatMsg(currentUser.username, msg, true);
 
   input.value = '';
   input.focus();
 }
-
 
 
 // ─── ГЛОБАЛЬНЫЙ ЧАТ ──────────────────────────────────────────
@@ -1256,7 +1009,14 @@ function appendGlobalChatMsg(msg, scroll = true) {
   const canDelete  = currentUser?.role === 'admin';
 
   // Проверяем упоминание текущего пользователя
-  const isMentioned = currentUser && msg.message && msg.message.toLowerCase().includes('@' + currentUser.username.toLowerCase());
+  const isMentioned = (() => {
+    if (!currentUser || !msg.message) return false;
+    const myName = currentUser.username.toLowerCase();
+    const escaped = myName.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
+    // Тот же класс символов ников, что и в formatChatMessage: [\w\u0400-\u04FF-]
+    const regex = new RegExp('@' + escaped + '(?=[^\\w\\u0400-\\u04FF-]|$)', 'i');
+    return regex.test(msg.message);
+  })();
 
   const time = new Date(msg.timestamp).toLocaleTimeString('ru', {
     hour: '2-digit',
@@ -1380,7 +1140,7 @@ function appendGlobalChatMsg(msg, scroll = true) {
     delBtn.onclick = () => deleteChatMsg(msg.id, row);
     header.appendChild(delBtn);
   }
-  if (!isStreamer && !isAdmin && !canDelete){
+  if (!isStreamer && !isAdmin){
     const av = document.createElement('div');
   av.style.cssText = 'width:28px;height:28px;border-radius:50%;background:linear-gradient(135deg,var(--accent),var(--accent-dark));display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:#000;flex-shrink:0;cursor:pointer;margin-top:2px';
   av.textContent = msg.username[0].toUpperCase();
@@ -1405,7 +1165,6 @@ function appendGlobalChatMsg(msg, scroll = true) {
   }
   
 } 
-
 
 
 async function deleteChatMsg(msgId, rowEl) {
@@ -1518,16 +1277,6 @@ function sendGlobalChatMsg() {
 
   // Как и в игровом чате — не блокируем отправку по socket.connected:
   // Socket.IO сам поставит сообщение в очередь на долю секунды обрыва
-  // связи и отправит его сразу после переподключения. Раньше именно
-  // эта проверка иногда показывала "нет соединения" при фактически
-  // рабочем интернете.
-  //
-  // НО: помимо транспортного connected, у нас есть свой шаг аутентификации
-  // (connect -> emit('auth') -> сервер асинхронно проверяет cookie -> auth_ok).
-  // Если отправить global_chat до auth_ok, сервер ещё не знает, какому
-  // пользователю принадлежит сокет, и сообщение молча терялось — это и
-  // была причина "отправляется только с N-й попытки". Теперь до auth_ok
-  // сообщение ставится в очередь и уходит сразу после подтверждения.
   if (!_socketAuthed) {
     _pendingGlobalMsgs.push(msg);
     return;
@@ -1732,150 +1481,12 @@ function applySettings() {
   document.documentElement.style.setProperty('--board-dark',  s.boardDark  || '#b58863');
 }
 
-// ─── ПРОФИЛЬ ──────────────────────────────────────────────────
-
-function _profileShow(id) {
-  ['profile-loading','profile-data','profile-auth-required','profile-notfound'].forEach(s => {
-    const el = document.getElementById(s);
-    if (el) el.style.display = s === id ? 'grid' : 'none';
-  });
-}
-
-// Переключение вкладок профиля
-function _initProfileTabs() {
-  document.querySelectorAll('.profile-tab-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      document.querySelectorAll('.profile-tab-btn').forEach(b => {
-        b.style.color = 'var(--text-muted)';
-        b.style.borderBottomColor = 'transparent';
-        b.classList.remove('active');
-      });
-      btn.style.color = 'var(--accent)';
-      btn.style.borderBottomColor = 'var(--accent)';
-      btn.classList.add('active');
-      ['overview','games','activity'].forEach(t => {
-        const el = document.getElementById('ptab-' + t);
-        if (el) el.style.display = btn.dataset.ptab === t ? '' : 'none';
-      });
-    });
-  });
-}
-
-// SVG спарклайн рейтинга
-function _drawProfileRatingChart(ratings) {
-  const svg = document.getElementById('profile-rating-svg');
-  if (!svg) return;
-  const emptyEl = document.getElementById('profile-svg-empty');
-  if (!ratings || ratings.length < 2) {
-    if (emptyEl) emptyEl.style.display = '';
-    return;
-  }
-  if (emptyEl) emptyEl.style.display = 'none';
-
-  const W = 500, H = 100, PAD = 12;
-  const mn = Math.min(...ratings) - 15;
-  const mx = Math.max(...ratings) + 15;
-  const range = mx - mn || 1;
-
-  const pts = ratings.map((r, i) => {
-    const x = PAD + (i / (ratings.length - 1)) * (W - PAD * 2);
-    const y = PAD + (1 - (r - mn) / range) * (H - PAD * 2 - 16);
-    return [x, y];
-  });
-
-  const lineD = pts.map((p, i) => (i === 0 ? `M${p[0].toFixed(1)},${p[1].toFixed(1)}` : `L${p[0].toFixed(1)},${p[1].toFixed(1)}`)).join(' ');
-  const areaD = lineD + ` L${pts[pts.length-1][0].toFixed(1)},${H} L${pts[0][0].toFixed(1)},${H} Z`;
-
-  svg.innerHTML = `<defs>
-    <linearGradient id="prg" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="var(--accent)" stop-opacity=".3"/>
-      <stop offset="100%" stop-color="var(--accent)" stop-opacity="0"/>
-    </linearGradient>
-  </defs>
-  <path d="${areaD}" fill="url(#prg)"/>
-  <path d="${lineD}" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-  ${pts.map(p => `<circle cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="2.5" fill="var(--accent)"/>`).join('')}
-  <text x="${pts[pts.length-1][0].toFixed(1)}" y="${(pts[pts.length-1][1]-7).toFixed(1)}" text-anchor="middle" fill="var(--accent)" font-size="11" font-weight="700">${ratings[ratings.length-1]}</text>`;
-}
-
-// Таблица колебаний рейтинга
-function _buildRatingTable(games, username, currentRating) {
-  const tbody = document.getElementById('profile-rating-tbody');
-  if (!tbody) return;
-  if (!games || !games.length) {
-    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:20px">Партий пока нет</td></tr>';
-    return;
-  }
-
-  const K = 32;
-  let rNow = currentRating;
-  const rows = [];
-  const sorted = [...games].sort((a, b) => (b.endedAt || 0) - (a.endedAt || 0));
-
-  sorted.slice(0, 20).forEach((g, i) => {
-    const isWhite = g.white === username;
-    const opponent = isWhite ? g.black : g.white;
-    let resText, resColor, score;
-    if (g.result === 'draw')                           { resText = 'Ничья';      resColor = 'var(--text-secondary)'; score = 0.5; }
-    else if (g.result === (isWhite ? 'white':'black')) { resText = 'Победа';     resColor = 'var(--green)';          score = 1; }
-    else                                               { resText = 'Поражение';  resColor = 'var(--red)';            score = 0; }
-
-    const oppEst = rNow + (score === 1 ? -20 : score === 0 ? 20 : 0);
-    const exp = 1 / (1 + Math.pow(10, (oppEst - rNow) / 400));
-    const delta = Math.round(K * (score - exp));
-    const date = g.endedAt ? new Date(g.endedAt).toLocaleDateString('ru', {day:'2-digit',month:'2-digit'}) : '—';
-
-    rows.push({ g, opponent, resText, resColor, delta, rNow, date });
-    rNow = Math.max(100, rNow - delta);
-  });
-
-  tbody.innerHTML = rows.map((r, i) => {
-    const dc = r.delta > 0 ? 'color:var(--green);font-weight:700' : r.delta < 0 ? 'color:var(--red);font-weight:700' : 'color:var(--text-muted)';
-    const ds = r.delta > 0 ? '+' + r.delta : String(r.delta);
-    const gJson = JSON.stringify(r.g).replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/"/g,'&quot;');
-    return `<tr style="cursor:pointer;transition:background .1s" onmouseenter="this.style.background='var(--bg-hover)'" onmouseleave="this.style.background=''" onclick="_openGameFromProfile('${gJson}')">
-      <td style="padding:8px 10px;border-bottom:1px solid var(--border);color:var(--text-muted)">${i+1}</td>
-      <td style="padding:8px 10px;border-bottom:1px solid var(--border)"><a href="/profile/${encodeURIComponent(r.opponent)}" style="color:var(--accent);text-decoration:none" onclick="event.stopPropagation()">${escapeHtml(r.opponent)}</a></td>
-      <td style="padding:8px 10px;border-bottom:1px solid var(--border);color:var(--text-muted)">${escapeHtml(r.g.timeControl||'?')}</td>
-      <td style="padding:8px 10px;border-bottom:1px solid var(--border);color:${r.resColor};font-weight:600">${r.resText}</td>
-      <td style="padding:8px 10px;border-bottom:1px solid var(--border);${dc}">${ds}</td>
-      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-family:var(--font-mono);font-size:12px">${r.rNow}</td>
-      <td style="padding:8px 10px;border-bottom:1px solid var(--border);color:var(--text-muted)">${r.date}</td>
-    </tr>`;
-  }).join('');
-}
-
-function _openGameFromProfile(g) {
-  if (typeof g === 'string') { try { g = JSON.parse(g); } catch(e) { return; } }
-  window.location.href = '/game/' + g.id;
-}
 
 // ──────────────────────────────────────────────────────────────
 //  Emoji picker (настройки)
 // ──────────────────────────────────────────────────────────────
 
-const EMOJIS = [
-  '😀', '😃', '😄', '😁', '😆', '😅', '😂', '🤣', '😊', '😇', '🙂', '🙃', '😉', '😌', '😍', '🥰',
-  '😘', '😗', '😙', '😚', '😋', '😛', '😝', '😜', '🤪', '🤨', '🧐', '🤓', '😎', '🤩', '🥳', '😏',
-  '😒', '😞', '😔', '😟', '😕', '🙁', '☹️', '😣', '😖', '😫', '😩', '🥺', '😢', '😭', '😤', '😠',
-  '😡', '🤬', '🤯', '😳', '🥵', '🥶', '😱', '😨', '😰', '😥', '😓', '🤗', '🤔', '🤭', '🤫', '🤥',
-  '😶', '😐', '😑', '😬', '🙄', '😯', '😦', '😧', '😮', '😲', '🥱', '😴', '🤤', '😪', '😵', '🤐',
-  '🥴', '🤢', '🤮', '🤧', '😷', '🤒', '🤕', '🤑', '🤠', '😈', '👿', '👹', '👺', '💩', '👻', '💀',
-  '☠️', '👽', '🤖', '🎃', '😺', '😸', '😹', '😻', '😼', '😽', '🙀', '😿', '😾', '🙈', '🙉', '🙊',
-  '🐶', '🐱', '🐭', '🐹', '🐰', '🦊', '🐻', '🐼', '🐨', '🐯', '🦁', '🐮', '🐷', '🐸', '🐒', '🐔',
-  '🐧', '🐦', '🐤', '🐣', '🐥', '🐺', '🐗', '🐴', '🦄', '🐝', '🐛', '🦋', '🐌', '🐞', '🐜', '🦟',
-  '🦗', '🕷️', '🦂', '🐢', '🐍', '🦎', '🐙', '🦑', '🦐', '🦞', '🐠', '🐟', '🐡', '🐬', '🐳', '🐋',
-  '🦈', '🐊', '🐅', '🐆', '🦓', '🦍', '🦧', '🦣', '🐘', '🦛', '🦏', '🐪', '🐫', '🦒', '🦘', '🐃',
-  '🐂', '🐄', '🐎', '🐖', '🐏', '🐑', '🦙', '🐐', '🦌', '🐕', '🐩', '🐈', '🐓', '🦃', '🐇', '🐁',
-  '🐀', '🐿️', '🦔', '🐾', '🐉', '🐲', '🌵', '🎄', '🌲', '🌳', '🌴', '🌿', '🍀', '🍁', '🍂', '🍃',
-  '🍇', '🍈', '🍉', '🍊', '🍋', '🍌', '🍍', '🥭', '🍎', '🍏', '🍐', '🍑', '🍒', '🍓', '🥝', '🍅',
-  '🥥', '🥑', '🍆', '🥔', '🥕', '🌽', '🌶️', '🥒', '🥬', '🥦', '🧄', '🧅', '🍄', '🥜', '🌰', '🍞',
-  '🥐', '🥖', '🥨', '🥯', '🥞', '🧇', '🧀', '🍖', '🍗', '🥩', '🥓', '🍔', '🍟', '🍕', '🌭', '🥪',
-  '🌮', '🌯', '🥙', '🧆', '🥚', '🍳', '🥘', '🍲', '🥣', '🥗', '🍿', '🧈', '🧂', '🥫', '🍱', '🍘',
-  '🍙', '🍚', '🍛', '🍜', '🍝', '🍠', '🍢', '🍣', '🍤', '🍥', '🥮', '🍡', '🥟', '🥠', '🥡', '🦀',
-  '🦞', '🦐', '🦑', '🐙', '🍦', '🍧', '🍨', '🍩', '🍪', '🎂', '🍰', '🧁', '🥧', '🍫', '🍬', '🍭',
-  '🍮', '🍯', '🥛', '🍼', '🥤', '🧃', '🧉', '🧊', '🍺', '🍻', '🥂', '🥃', '🥄', '🍴', '🍽️', '🥢'
-];
+// Массив EMOJIS вынесен в общий /js/emojis.js (4.2); в index.html он
 
 function openEmojiPicker() {
   const grid = document.getElementById('emoji-grid');
@@ -1917,6 +1528,9 @@ async function selectEmoji(emoji) {
     // Обновляем отображение в настройках
     const preview = document.getElementById('current-emoji-preview');
     if (preview) preview.textContent = emoji || '';
+    // Обновляем эмодзи в профиле, если он открыт
+    const profileEmoji = document.getElementById('profile-emoji');
+    if (profileEmoji) profileEmoji.textContent = emoji || '';
     // Перезагружаем чаты (чтобы обновились эмодзи)
     if (typeof reloadGlobalChat === 'function') reloadGlobalChat();
     else if (typeof initGlobalChat === 'function') initGlobalChat();
@@ -1927,261 +1541,6 @@ async function selectEmoji(emoji) {
   }
 }
 
-// Активность за 7 дней
-// async function _loadProfileActivity(username, games) {
-//   const feedEl    = document.getElementById('profile-activity-feed');
-//   const blocksEl  = document.getElementById('profile-activity-blocks');
-//   if (!feedEl || !blocksEl) return;
-
-//   const since = Date.now() - 7 * 24 * 60 * 60 * 1000;
-//   const recentGames = games.filter(g => (g.endedAt || 0) > since);
-//   const wins = recentGames.filter(g => {
-//     const isWhite = g.white === username;
-//     return g.result === (isWhite ? 'white' : 'black');
-//   }).length;
-
-//   let blogPosts = 0, forumPosts = 0, chatMsgs = 0;
-//   try {
-//     const b = await fetch('/api/blog?limit=50').then(r=>r.json());
-//     if (b.posts) blogPosts = b.posts.filter(p => p.author === username && p.createdAt > since).length;
-//   } catch(e){}
-//   try {
-//     const ft = await fetch('/api/forum/threads?limit=50').then(r=>r.json());
-//     if (ft.threads) forumPosts = ft.threads.filter(t => t.author === username && t.createdAt > since).length;
-//   } catch(e){}
-//   try {
-//     const ch = await fetch('/api/chat?limit=500').then(r=>r.json());
-//     if (Array.isArray(ch)) chatMsgs = ch.filter(m => m.username === username && m.timestamp > since).length;
-//   } catch(e){}
-
-//   const blocks = [
-//     { icon:'♟', label:'Партий',     val: recentGames.length, color:'var(--accent)' },
-//     { icon:'🏆', label:'Побед',      val: wins,               color:'var(--green)' },
-//     { icon:'💬', label:'В чате',     val: chatMsgs,           color:'#7c9cbf' },
-//     { icon:'📰', label:'Блог',       val: blogPosts,          color:'#c9a84c' },
-//     { icon:'💡', label:'Форум',      val: forumPosts,         color:'#8bc4a0' },
-//     { icon:'🧩', label:'Задач',      val: '—',               color:'var(--text-muted)' },
-//   ];
-
-//   blocksEl.innerHTML = blocks.map(b => `
-//     <div class="settings-section" style="text-align:center;padding:10px 6px;margin:0">
-//       <div style="font-size:18px">${b.icon}</div>
-//       <div style="font-size:20px;font-weight:700;color:${b.color};font-family:var(--font-mono)">${b.val}</div>
-//       <div style="font-size:11px;color:var(--text-muted);margin-top:2px">${b.label}</div>
-//     </div>`).join('');
-
-//   const events = recentGames.map(g => {
-//     const isWhite = g.white === username;
-//     const opp = isWhite ? g.black : g.white;
-//     let res;
-//     if (g.result === 'draw') res = 'Ничья';
-//     else if (g.result === (isWhite?'white':'black')) res = 'Победа';
-//     else res = 'Поражение';
-//     const resColor = res==='Победа'?'var(--green)':res==='Поражение'?'var(--red)':'var(--text-secondary)';
-//     const moves = g.moves ? Math.floor(g.moves.length/2) : 0;
-//     const dateStr = g.endedAt ? new Date(g.endedAt).toLocaleString('ru',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}) : '';
-//     return { ts: g.endedAt||0, html: `
-//       <div style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border);cursor:pointer" onclick="_openGameFromProfile(${JSON.stringify(JSON.stringify(g))})">
-//         <div style="width:34px;height:34px;border-radius:50%;background:var(--bg-secondary);display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0">♟</div>
-//         <div style="flex:1">
-//           <div style="font-size:13px">Партия vs <b>${escapeHtml(opp)}</b> — <b style="color:${resColor}">${res}</b></div>
-//           <div style="font-size:11px;color:var(--text-muted);margin-top:2px">${escapeHtml(g.timeControl||'?')} · ${moves} ходов${dateStr?' · '+dateStr:''}</div>
-//         </div>
-//       </div>` };
-//   }).sort((a,b)=>b.ts-a.ts);
-
-//   feedEl.innerHTML = events.length
-//     ? events.slice(0,30).map(e=>e.html).join('')
-//     : '<div style="text-align:center;color:var(--text-muted);padding:20px">Нет активности за 7 дней</div>';
-// }
-
-async function renderProfileUI(username) {
-  _profileShow('profile-loading');
-  // Сброс вкладок
-  _initProfileTabs();
-  ['ptab-overview','ptab-games','ptab-activity'].forEach((id,i) => {
-    const el = document.getElementById(id);
-    if (el) el.style.display = i===0?'':'none';
-  });
-  document.querySelectorAll('.profile-tab-btn').forEach((b,i) => {
-    if (i===0) { b.style.color='var(--accent)'; b.style.borderBottomColor='var(--accent)'; }
-    else       { b.style.color='var(--text-muted)'; b.style.borderBottomColor='transparent'; }
-  });
-
-  try {
-    const u = await apiGet('/users/' + encodeURIComponent(username));
-    _profileShow('profile-data');
-
-    const isMe = currentUser && currentUser.username === u.username;
-    history.replaceState({}, '', isMe ? '/profile' : '/profile/' + encodeURIComponent(u.username));
-
-    const set = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
-    // set('profile-avatar', u.username[0].toUpperCase());
-    set('profile-name',   u.username);
-    set('profile-rating', '★ ' + u.rating);
-    set('profile-joined', 'На сайте с ' + new Date(u.createdAt).toLocaleDateString('ru'));
-
-    const onlineEl = document.getElementById('profile-online-status');
-    if (onlineEl) onlineEl.innerHTML = u.online
-      ? '<span style="color:var(--green)">● онлайн</span>'
-      : '<span style="color:var(--text-muted)">● оффлайн</span>';
-
-    // Бейдж
-    const badgeEl = document.getElementById('profile-badge');
-    if (badgeEl) {
-      badgeEl.innerHTML = '';
-      if (u.banned) badgeEl.innerHTML += '<span style="background:var(--red);color:#fff;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:700;margin-right:4px">🚫 Заблокирован</span>';
-      if (u.role==='admin') badgeEl.innerHTML += '<span style="background:var(--accent);color:#fff;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:700">⚙️ Администратор</span>';
-    }
-
-    set('stat-games',  u.gamesPlayed || 0);
-    set('stat-wins',   u.wins        || 0);
-    set('stat-losses', u.losses      || 0);
-    set('stat-draws',  u.draws       || 0);
-
-    const winPct = u.gamesPlayed > 0 ? Math.round(u.wins / u.gamesPlayed * 100) : 0;
-    const bar = document.getElementById('profile-winrate-bar');
-    const txt = document.getElementById('profile-winrate-text');
-    if (bar) bar.style.width = winPct + '%';
-    if (txt) txt.textContent = `Винрейт: ${winPct}% (${u.wins||0}П / ${u.losses||0}П / ${u.draws||0}Н)`;
-
-    // Задачи
-    set('profile-puzzle-rating', u.puzzle_rating || 1200);
-    set('profile-puzzle-solved', u.puzzle_solved || 0);
-    const acc = (u.puzzle_attempted||0) > 0 ? Math.round((u.puzzle_solved||0)/u.puzzle_attempted*100) : 0;
-    set('profile-puzzle-acc', acc + '%');
-    // Storm
-    set('profile-storm-best', (u.storm_runs||0) > 0 ? (u.storm_best || 0) : '—');
-    set('profile-storm-runs', u.storm_runs || 0);
-
-    // Кнопки действий
-    const actionsEl = document.getElementById('profile-actions');
-    if (actionsEl) {
-      actionsEl.style.display = (!isMe && currentUser) ? 'flex' : 'none';
-    }
-    const btnM = document.getElementById('profile-btn-message');
-    const btnC = document.getElementById('profile-btn-challenge');
-    const btnB = document.getElementById('profile-btn-ban');
-    const btnU = document.getElementById('profile-btn-unban');
-
-    if (btnM) { btnM.style.display = currentUser ? '' : 'none'; btnM.onclick = () => { window.location = '/inbox/' + encodeURIComponent(u.username); }; }
-    if (btnC) { btnC.style.display = (u.online && currentUser) ? 'block' : 'none'; btnC.onclick = () => { localStorage.setItem('ch_pending_challenge', u.username); showPage('lobby'); }; }
-    const isAdmin = currentUser?.role === 'admin';
-    if (btnB) { btnB.style.display = (isAdmin && !u.banned) ? '' : 'none'; btnB.onclick = async () => { const r = prompt('Причина бана:','Нарушение правил'); if (!r) return; await apiPost('/admin/ban',{username:u.username,reason:r}); toast('Заблокирован','success'); renderProfileUI(u.username); }; }
-    if (btnU) { btnU.style.display = (isAdmin && u.banned)  ? '' : 'none'; btnU.onclick = async () => { await apiPost('/admin/unban',{username:u.username}); toast('Разблокирован','success'); renderProfileUI(u.username); }; }
-
-    // Загружаем игры
-    const games = await loadProfileGames(u.username);
-
-    // Спарклайн
-    if (games && games.length > 1) {
-      const K = 32;
-      let r = u.rating;
-      const rHist = [r];
-      const sorted = [...games].sort((a,b)=>(b.endedAt||0)-(a.endedAt||0));
-      sorted.slice(0,19).forEach(g => {
-        const isW = g.white === u.username;
-        const sc = g.result==='draw'?0.5:g.result===(isW?'white':'black')?1:0;
-        const oppR = r + (sc===1?-20:sc===0?20:0);
-        const exp = 1/(1+Math.pow(10,(oppR-r)/400));
-        const delta = Math.round(K*(sc-exp));
-        r = Math.max(100, r-delta);
-        rHist.unshift(r);
-      });
-      _drawProfileRatingChart(rHist);
-    }
-
-    // Таблица колебаний
-    _buildRatingTable(games, u.username, u.rating);
-
-    // Активность
-    loadActivity(u.username, games);
-
-    // Перепроверяем онлайн
-    const recheckOnline = async (n) => {
-      try {
-        const u2 = await apiGet('/users/' + encodeURIComponent(username));
-        const el = document.getElementById('profile-online-status');
-        if (el) el.innerHTML = u2.online
-          ? '<span style="color:var(--green)">● онлайн</span>'
-          : '<span style="color:var(--text-muted)">● оффлайн</span>';
-        if (u2.online || n>=3) return;
-      } catch {}
-      setTimeout(()=>recheckOnline(n+1), 2000);
-    };
-    setTimeout(()=>recheckOnline(1), 800);
-
-  } catch(e) {
-    _profileShow('profile-notfound');
-  }
-}
-
-async function loadProfileGames(username, limit=50, append=false) {
-  const listEl = document.getElementById('profile-games-list');
-  if (!append && listEl) listEl.innerHTML = '<div style="text-align:center;color:var(--text-muted);padding:20px 0"><div class="spinner" style="margin:0 auto 10px;width:20px;height:20px"></div></div>';
-
-  try {
-    const games = await apiGet('/users/' + encodeURIComponent(username) + '/games?limit=' + limit);
-
-    if (!games || !games.length) {
-      if (listEl && !append) listEl.innerHTML = '<div style="text-align:center;color:var(--text-muted);padding:24px 0;font-size:14px">Партий пока нет</div>';
-      return games || [];
-    }
-
-    if (listEl) {
-      if (!append) listEl.innerHTML = '';
-      games.forEach(g => {
-        const isWhite  = g.white === username;
-        const myColor  = isWhite ? 'white' : 'black';
-        const opponent = isWhite ? g.black : g.white;
-        let icon, color, label;
-        if (g.result === 'draw')       { icon='½'; color='var(--text-secondary)'; label='Ничья'; }
-        else if (g.result === myColor) { icon='✓'; color='var(--green)';          label='Победа'; }
-        else                           { icon='✗'; color='var(--red)';             label='Поражение'; }
-
-        const halfMoves = g.moves ? g.moves.length : 0;
-        const moveCnt   = Math.floor(halfMoves / 2);
-        const date = (g.endedAt||g.createdAt) ? new Date(g.endedAt||g.createdAt).toLocaleDateString('ru',{day:'2-digit',month:'2-digit',year:'2-digit'}) : '—';
-
-        const row = document.createElement('div');
-        row.style.cssText = 'display:flex;align-items:center;gap:12px;padding:10px 8px;border-radius:8px;cursor:pointer;border-bottom:1px solid var(--border);transition:background 0.15s';
-        row.onmouseenter = () => row.style.background = 'var(--bg-hover)';
-        row.onmouseleave = () => row.style.background = '';
-        row.innerHTML = `
-          <div style="width:28px;height:28px;border-radius:50%;background:${color}22;display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:700;color:${color};flex-shrink:0">${icon}</div>
-          <div style="flex:1;min-width:0">
-            <div style="font-weight:600;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
-              ${escapeHtml(isWhite?'♙ ':'♟ ')}${escapeHtml(username)} <span style="color:var(--text-muted);font-weight:400">vs</span>
-              <a href="/profile/${encodeURIComponent(opponent)}" style="color:var(--accent);text-decoration:none" onclick="event.stopPropagation()">${escapeHtml(opponent||'?')}</a>
-            </div>
-            <div style="font-size:12px;color:var(--text-muted);margin-top:2px">${escapeHtml(g.timeControl||'?')} · ${moveCnt} ход${moveCnt===1?'':moveCnt<5?'а':'ов'} · ${date}</div>
-          </div>
-          <div style="font-size:12px;font-weight:600;color:${color};flex-shrink:0">${label}</div>
-          <div style="color:var(--text-muted);font-size:16px;flex-shrink:0">›</div>`;
-        row.addEventListener('click', () => _openGameFromProfile(g));
-        listEl.appendChild(row);
-      });
-
-      // Load more button
-      const moreEl = document.getElementById('profile-games-more');
-      const moreBtn = document.getElementById('profile-btn-more-games');
-      if (moreEl) moreEl.style.display = games.length >= limit ? '' : 'none';
-      if (moreBtn && !moreBtn._bound) {
-        moreBtn._bound = true;
-        moreBtn.addEventListener('click', async () => {
-          moreBtn.textContent = 'Загрузка...'; moreBtn.disabled = true;
-          await loadProfileGames(username, 20, true);
-          moreBtn.textContent = 'Загрузить ещё'; moreBtn.disabled = false;
-        });
-      }
-    }
-
-    return games;
-  } catch(e) {
-    if (listEl && !append) listEl.innerHTML = '<div style="text-align:center;color:var(--text-muted);padding:24px 0;font-size:14px">Не удалось загрузить историю</div>';
-    return [];
-  }
-}
 
 pages['profile'] = () => {
   if (currentUser && currentUser.username) {
@@ -2207,6 +1566,19 @@ let _loadingGameIntoAnalysis = false;
 pages['analysis'] = () => {
   if (!StockfishAnalyzer.isReady()) StockfishAnalyzer.init();
 
+  let pendingFen = null;
+  try { pendingFen = sessionStorage.getItem('ch_analysis_fen'); } catch (e) {}
+  if (pendingFen) {
+    try { sessionStorage.removeItem('ch_analysis_fen'); } catch (e) {}
+    _loadingGameIntoAnalysis = true;
+    setTimeout(() => {
+      _loadingGameIntoAnalysis = false;
+      loadAnalysisFENFrom(pendingFen);
+    }, 80);
+    return;
+  }
+
+  // 2) Партия, переданная из истории профиля / модалки результата
   const savedGame = localStorage.getItem('ch_analysis_game');
   if (savedGame) {
     localStorage.removeItem('ch_analysis_game');
@@ -2220,8 +1592,48 @@ pages['analysis'] = () => {
       return;
     } catch(e) {}
   }
+
+  // 3) Обычный запуск анализа со стартовой позицией
   chessBoard.loadAnalysis();
 };
+
+function loadAnalysisFENFrom(fen) {
+  if (!fen || typeof fen !== 'string') return;
+  if (!isValidAnalysisFEN(fen)) {
+    chessBoard.loadAnalysis();
+    toast(T('game.fen_invalid', 'Неверный FEN'), 'error');
+    return;
+  }
+  chessBoard.loadFEN(fen);
+  const fenEl = document.getElementById('analysis-current-fen');
+  if (fenEl) fenEl.textContent = fen;
+  setTimeout(() => { if (typeof requestAnalysis === 'function') requestAnalysis(); }, 60);
+}
+
+// Базовая проверка FEN перед отдачей движку: распарсился и оба короля на месте
+function isValidAnalysisFEN(fen) {
+  try {
+    const st = ChessEngine.parseFEN(fen);
+    if (!st || !st.board || st.board.length !== 64) return false;
+    let kings = 0;
+    for (const p of st.board) { if (p && p.type === 'K') kings++; }
+    return kings === 2;
+  } catch (e) { return false; }
+}
+
+function analyzeCurrentGame() {
+  let moves = [];
+  try {
+    const hist = (chessBoard.state && chessBoard.state.history) || [];
+    moves = hist
+      .filter(h => h && h.from !== undefined && h.to !== undefined)
+      .map(h => ({ from: h.from, to: h.to, promotion: h.promotion }));
+  } catch (e) {}
+  if (moves.length) {
+    try { localStorage.setItem('ch_analysis_game', JSON.stringify({ moves })); } catch (e) {}
+  }
+  showPage('analysis');
+}
 
 function loadGameIntoAnalysis(game) {
   if (!game.moves || !game.moves.length) {
@@ -2229,14 +1641,12 @@ function loadGameIntoAnalysis(game) {
     return;
   }
   chessBoard.loadGameMoves(game.moves);
-  toast(`Партия: ${game.white || '?'} vs ${game.black || '?'} · ${Math.floor(game.moves.length / 2)} ходов`, 'success');
+  toast(T('game.loaded_for_analysis', 'Партия: {w} vs {b} · {n} ходов')
+    .replace('{w}', game.white || '?').replace('{b}', game.black || '?')
+    .replace('{n}', Math.floor(game.moves.length / 2)), 'success');
 }
 
 // ─── ПРОЧЕЕ ───────────────────────────────────────────────────
-function escapeHtml(s) {
-  if (!s) return '';
-  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-}
 
 function setBoardTheme(light, dark) {
   document.documentElement.style.setProperty('--board-light', light);
@@ -2250,10 +1660,7 @@ function setBoardTheme(light, dark) {
 function loadAnalysisFEN() {
   const fen = document.getElementById('analysis-fen-input')?.value?.trim();
   if (!fen) return;
-  chessBoard.loadFEN(fen);
-  if (document.getElementById('analysis-current-fen'))
-    document.getElementById('analysis-current-fen').textContent = fen;
-  setTimeout(() => StockfishAnalyzer.analyze(fen, 20), 100);
+  loadAnalysisFENFrom(fen);
   toast('Позиция загружена', 'success');
 }
 
@@ -2286,7 +1693,6 @@ function loadPGN() {
     toast(`PGN загружен: ${tokens.length} ходов`, 'success');
   } catch(e) { toast('Ошибка загрузки PGN', 'error'); console.error(e); }
 }
-
 
 
 // ─── РЕПОРТЫ ──────────────────────────────────────────────────
@@ -2697,30 +2103,11 @@ async function renderOnlineUsersList() {
   }
 }
 
-// ──────────────────────────────────────────────────────────────
-//  QUESTS (Сезон 2)
-// ──────────────────────────────────────────────────────────────
-let currentQuestsPage = 1;
-let questsTotalPages = 1;
-let userCrystals = 0;
-let availableQuestId = null;
-let canDoToday = false;
-
-
-
-// Привязка событий (после загрузки DOM)
-document.addEventListener('DOMContentLoaded', () => {
-    const prevBtn = document.getElementById('quests-prev-page');
-    const nextBtn = document.getElementById('quests-next-page');
-    const claimBtn = document.getElementById('quests-claim-btn');
-    if (prevBtn) prevBtn.addEventListener('click', () => {
-        if (currentQuestsPage > 1) loadQuests(currentQuestsPage - 1);
-    });
-    if (nextBtn) nextBtn.addEventListener('click', () => {
-        if (currentQuestsPage < questsTotalPages) loadQuests(currentQuestsPage + 1);
-    });
-    if (claimBtn) claimBtn.addEventListener('click', claimQuest);
-});
+// ─── QUESTS: мёртвые слушатели УДАЛЕНЫ (3.2) ─────────────────
+// Обработчики #quests-prev-page, #quests-next-page, #quests-claim-btn
+// слушали элементы, которых нет в index.html, и ссылались на
+// неопределённые loadQuests/claimQuest. Сами переменные блока
+// (currentQuestsPage и др.) больше нигде не использовались.
 
 // ─── INIT ──────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', async () => {
@@ -2735,6 +2122,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   });
   applySettings();
+
+  // Фолбэк CH.openAuthModal со страниц без своей модалки (DRY-авторизация):
+  // /#login или /#register — открываем соответствующую модалку на главной.
+  const authHash = (location.hash || '').replace('#', '');
+  if (authHash === 'login' || authHash === 'register') {
+    history.replaceState(null, '', location.pathname + location.search);
+    setTimeout(() => { if (window.CH) CH.openAuthModal(authHash); }, 300);
+  }
 
   // Регистрируем puzzle страницы ДО showPage
   pages['puzzles'] = () => {
@@ -2760,7 +2155,24 @@ document.addEventListener('DOMContentLoaded', async () => {
   }, 150);
 };
   pages['puzzle-topic']       = () => {};
-  pages['puzzle-solve']       = () => {};
+  pages['puzzle-solve']       = () => {
+    if (pz.puzzle && pz.board && pz.board.length) {
+      setTimeout(() => pzRender(), 50);
+      return;
+    }
+    try {
+      const saved = sessionStorage.getItem('ch_current_puzzle');
+      if (saved) {
+        const { puzzle, topic } = JSON.parse(saved);
+        if (puzzle && puzzle.fen) {
+          openPuzzleSolve(puzzle, topic);
+          return;
+        }
+      }
+    } catch (e) {}
+    // Восстановить нечего — безопасно возвращаем в каталог задач
+    showPage('puzzles');
+  };
   pages['puzzle-leaderboard'] = loadPuzzleLeaderboardFull;
   pages['storm']             = () => { location.href = '/storm.html'; };
   pages['storm-leaderboard'] = () => { location.href = '/storm.html?tab=leaderboard'; };
@@ -2801,7 +2213,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
 
-
   document.querySelectorAll('[data-page]').forEach(el => {
     el.addEventListener('click', e => { e.preventDefault(); showPage(el.dataset.page); });
   });
@@ -2840,7 +2251,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   } catch(e) { console.warn('ch_launch_game parse error', e); }
 
-  setInterval(fetchOnline, 10000);
+  setInterval(() => {
+    if (document.hidden) return;
+    if (socket && socket.connected) {
+      // Список онлайн-пользователей обновляем только если открыт модал
+      const modal = document.getElementById('modal-online-users');
+      if (!modal || modal.style.display === 'none') return;
+    }
+    fetchOnline();
+  }, 10000);
 });
 // ══════════════════════════════════════════════════════════════
 //  PUZZLE MODULE
@@ -2850,6 +2269,23 @@ const PUZZLE_PIECE_IMG = {
   wk:'wK',wq:'wQ',wr:'wR',wb:'wB',wn:'wN',wp:'wP',
   bk:'bK',bq:'bQ',br:'bR',bb:'bB',bn:'bN',bp:'bP',
 };
+
+// Безопасный доступ к словарю i18n: CH_I18N может быть ещё не загружен,
+// тогда возвращаем русский fallback (строки ниже дублируют ru.json).
+function chT(key, fallback) {
+  try {
+    const v = window.CH_I18N ? window.CH_I18N.t(key) : undefined;
+    if (v && v !== key) return v;
+  } catch (e) { /* i18n недоступен */ }
+  return fallback !== undefined ? fallback : key;
+}
+// Метка сложности задачи ("🟢 Лёгкая" / "🟡 Средняя" / "🔴 Сложная")
+function pzDiffLabel(d) {
+  if (d === 'easy')   return chT('puzzles.diff_easy',   '🟢 Лёгкая');
+  if (d === 'medium') return chT('puzzles.diff_medium', '🟡 Средняя');
+  if (d === 'hard')   return chT('puzzles.diff_hard',   '🔴 Сложная');
+  return d || '';
+}
 
 const pz = {
   puzzle:null, topic:null, topicList:[], idx:0,
@@ -3080,25 +2516,38 @@ async function pzDoMove(from, to, promoChoice) {
   pzRender();
 
   try {
+    if (pz._startP) { try { await pz._startP; } catch (e) {} }
     const res = await apiPost('/puzzles/' + pz.puzzle.id + '/move', { moveIndex: pz._moveIndex || 0, move });
+
+    if (res.restart) {
+      // Сервер потерял сессию (например, перезапуск) — начинаем задачу заново.
+      toast(chT('puzzles.session_restart', 'Сессия задачи сброшена — начни задачу заново'), 'info');
+      puzzleReset();
+      return;
+    }
+
+    if (res.illegal) {
+      // Невозможный ход: штрафа нет, просто возвращаем фигуру.
+      const fbI = document.getElementById('puzzle-feedback');
+      if (fbI) { fbI.style.display = 'block'; fbI.className = 'puzzle-feedback wrong'; fbI.textContent = chT('puzzles.feedback_illegal', '✗ Так ходить нельзя'); }
+      setTimeout(pzRollbackLastPlayerMove, 700);
+      return;
+    }
 
     if (!res.correct) {
       // Неверный ход
       pz._failed = true;
       const fb = document.getElementById('puzzle-feedback');
-      if (fb) { fb.style.display = 'block'; fb.className = 'puzzle-feedback wrong'; fb.textContent = '✗ Неверно — попробуй ещё раз'; }
-      // Фиксируем поражение
-      apiPost('/puzzles/' + pz.puzzle.id + '/attempt', { correct: false }).then(data => {
-        // Показываем изменение рейтинга если есть
-        if (data && data.ratingDelta && data.ratingDelta < 0) {
-          const rc = document.getElementById('puzzle-rating-change');
-          const rd = document.getElementById('puzzle-rating-delta');
-          const rn = document.getElementById('puzzle-new-rating');
-          if (rc) rc.style.display = 'block';
-          if (rd) { rd.textContent = data.ratingDelta; rd.style.color = '#e74c3c'; }
-          if (rn) rn.textContent = 'Рейтинг задач: ' + data.newPuzzleRating;
-        }
-      }).catch(() => {});
+      if (fb) { fb.style.display = 'block'; fb.className = 'puzzle-feedback wrong'; fb.textContent = chT('puzzles.feedback_wrong', '✗ Неверно — попробуй ещё раз'); }
+      // Рейтинг (Glicko-2) считает сервер и присылает в ответе на ход.
+      if (res.rating && res.rating.delta) {
+        const rc = document.getElementById('puzzle-rating-change');
+        const rd = document.getElementById('puzzle-rating-delta');
+        const rn = document.getElementById('puzzle-new-rating');
+        if (rc) rc.style.display = 'block';
+        if (rd) { rd.textContent = (res.rating.delta > 0 ? '+' : '') + res.rating.delta; rd.style.color = res.rating.delta > 0 ? '#2ecc71' : '#e74c3c'; }
+        if (rn) rn.textContent = chT('puzzles.rating_prefix', 'Рейтинг:') + ' ' + res.rating.newRating;
+      }
       setTimeout(() => {
         // Откатываем к позиции до неверного хода
         pz._history.pop();
@@ -3141,8 +2590,11 @@ async function pzDoMove(from, to, promoChoice) {
     pz._moveIndex = (pz._moveIndex || 0) + 1;
 
     if (res.finished) {
-      const data = await apiPost('/puzzles/' + pz.puzzle.id + '/attempt', { correct: true });
-      pzShowSuccess(data);
+      pzShowSuccess({
+        ratingDelta: res.rating ? res.rating.delta : 0,
+        newPuzzleRating: res.rating ? res.rating.newRating : undefined,
+        unrated: !res.rating,   // повторное решение — рейтинг не меняется
+      });
       return;
     }
 
@@ -3150,7 +2602,7 @@ async function pzDoMove(from, to, promoChoice) {
     if (res.autoMove) {
       pz._autoPlaying = true;
       const fb = document.getElementById('puzzle-feedback');
-      if (fb) { fb.style.display = 'block'; fb.className = 'puzzle-feedback correct'; fb.textContent = '✓ Верно! Соперник отвечает...'; }
+      if (fb) { fb.style.display = 'block'; fb.className = 'puzzle-feedback correct'; fb.textContent = chT('puzzles.feedback_correct', '✓ Верно! Соперник отвечает...'); }
       setTimeout(() => {
         const autoFrom = pzUCIToSq(res.autoMove.slice(0, 2));
         const autoTo   = pzUCIToSq(res.autoMove.slice(2, 4));
@@ -3176,24 +2628,11 @@ async function pzDoMove(from, to, promoChoice) {
       }, 600);
     }
   } catch(e) {
-    // Fallback: локальная проверка
-    const sol = (pz.puzzle.solution || '').trim().split(/\s+/)[0].toLowerCase();
-    if (move !== sol) {
-      pz._failed = true;
-      const fb = document.getElementById('puzzle-feedback');
-      if (fb) { fb.style.display = 'block'; fb.className = 'puzzle-feedback wrong'; fb.textContent = '✗ Неверно — попробуй ещё раз'; }
-      setTimeout(() => {
-        pz._history.pop();
-        pz.board = pzFenToBoard(pz.puzzle.fen); pz.lastMove = null; pz.selected = null;
-        pz._historyIdx = -1;
-        if (ml) ml.textContent = '—';
-        if (fb) fb.style.display = 'none';
-        pzComputeLegalDests();
-        pzRender();
-      }, 1200);
-    } else {
-      pzShowSuccess({ ratingDelta: 0 });
-    }
+    // Нет связи с сервером. Решения на клиенте нет (так и задумано), поэтому
+    // локально проверять нечем — возвращаем фигуру и просим повторить.
+    const fb = document.getElementById('puzzle-feedback');
+    if (fb) { fb.style.display = 'block'; fb.className = 'puzzle-feedback wrong'; fb.textContent = chT('puzzles.feedback_network', 'Нет связи с сервером — попробуй ещё раз'); }
+    setTimeout(pzRollbackLastPlayerMove, 1200);
   }
 }
 
@@ -3296,8 +2735,8 @@ document.addEventListener('keydown', (e) => {
 function pzShowSuccess(data) {
   pz.solved = true;
   const fb = document.getElementById('puzzle-feedback');
-  const alreadySolved = data && data.alreadySolved;
-  const feedbackText = alreadySolved ? '✓ Правильно! (уже решено — рейтинг не меняется)' : '✓ Отлично! Задача решена!';
+  const alreadySolved = data && (data.alreadySolved || data.unrated);
+  const feedbackText = alreadySolved ? chT('puzzles.feedback_solved_already', '✓ Правильно! (повторная попытка — рейтинг не меняется)') : chT('puzzles.feedback_solved', '✓ Отлично! Задача решена!');
   if (fb) { fb.style.display = 'block'; fb.className = 'puzzle-feedback correct'; fb.textContent = feedbackText; }
   if (data && data.ratingDelta !== undefined && data.ratingDelta !== 0 && !alreadySolved) {
     const rc = document.getElementById('puzzle-rating-change');
@@ -3305,7 +2744,7 @@ function pzShowSuccess(data) {
     const rn = document.getElementById('puzzle-new-rating');
     if (rc) rc.style.display = 'block';
     if (rd) { rd.textContent = (data.ratingDelta > 0 ? '+' : '') + data.ratingDelta; rd.style.color = data.ratingDelta > 0 ? '#2ecc71' : '#e74c3c'; }
-    if (rn) rn.textContent = 'Рейтинг задач: ' + data.newPuzzleRating;
+    if (rn) rn.textContent = chT('puzzles.rating_prefix', 'Рейтинг:') + ' ' + data.newPuzzleRating;
   }
   const nb = document.getElementById('puzzle-nav-btns');
   if (nb) nb.style.display = 'flex';
@@ -3323,6 +2762,7 @@ function puzzleReset() {
   const fb=document.getElementById('puzzle-feedback'); if(fb) fb.style.display='none';
   const nb=document.getElementById('puzzle-nav-btns'); if(nb) nb.style.display='none';
   const rc=document.getElementById('puzzle-rating-change'); if(rc) rc.style.display='none';
+  pz._startP = pzStartSession(pz.puzzle);
   pzRender();
 }
 
@@ -3339,7 +2779,7 @@ async function loadPuzzlesPage() {
       if(card) card.style.display='block';
       if(tEl) tEl.textContent=p.title;
       if(dEl) dEl.textContent=p.description||'';
-      if(diffEl){ diffEl.textContent={easy:'🟢 Лёгкая',medium:'🟡 Средняя',hard:'🔴 Сложная'}[p.difficulty]||p.difficulty; diffEl.className='puzzle-diff-badge '+(p.difficulty||''); }
+      if(diffEl){ diffEl.textContent=pzDiffLabel(p.difficulty)||p.difficulty; diffEl.className='puzzle-diff-badge '+(p.difficulty||''); }
     }
   } catch(e) { console.warn('[Puzzles daily]',e.message); }
 
@@ -3350,21 +2790,21 @@ async function loadPuzzlesPage() {
       const topics = await apiGet('/puzzles/topics');
       grid.innerHTML = '';
       if (!topics.length) {
-        grid.innerHTML='<div style="color:var(--text-muted);font-size:14px;padding:16px;grid-column:1/-1">Тем пока нет — добавьте задачи через Admin API</div>';
+        grid.innerHTML='<div style="color:var(--text-muted);font-size:14px;padding:16px;grid-column:1/-1">'+chT('puzzles.topics_empty','Тем пока нет — добавьте задачи через Admin API')+'</div>';
       } else {
         for (const t of topics) {
           const card=document.createElement('div'); card.className='puzzle-topic-card';
           card.innerHTML=`<div class="puzzle-topic-icon">${t.icon}</div>
             <div class="puzzle-topic-name">${escapeHtml(t.name)}</div>
             <div class="puzzle-topic-desc">${escapeHtml(t.description||'')}</div>
-            <span class="puzzle-topic-count">${t.puzzleCount} задач</span>`;
+            <span class="puzzle-topic-count">${chT('puzzles.count_in_topic','{n} задач').replace('{n}', t.puzzleCount)}</span>`;
           card.addEventListener('click', ()=>openPuzzleTopic(t));
           grid.appendChild(card);
         }
       }
     } catch(e) {
       console.error('[Puzzles topics]', e.message);
-      grid.innerHTML='<div style="color:var(--red);padding:16px;font-size:13px;grid-column:1/-1">Ошибка загрузки тем: '+escapeHtml(e.message)+'</div>';
+      grid.innerHTML='<div style="color:var(--red);padding:16px;font-size:13px;grid-column:1/-1">'+chT('puzzles.topics_error','Ошибка загрузки тем: ')+escapeHtml(e.message)+'</div>';
     }
   }
 
@@ -3373,13 +2813,13 @@ async function loadPuzzlesPage() {
     const lb = await apiGet('/puzzles/leaderboard');
     const el = document.getElementById('puzzle-leaderboard-mini');
     if (el) {
-      if (!lb.length) { el.innerHTML='<div style="padding:16px;color:var(--text-muted);font-size:13px;text-align:center">Ещё никто не решал</div>'; }
+      if (!lb.length) { el.innerHTML='<div style="padding:16px;color:var(--text-muted);font-size:13px;text-align:center">'+chT('puzzles.lb_empty','Ещё никто не решал')+'</div>'; }
       else {
         el.innerHTML='';
         lb.slice(0,10).forEach((u,i)=>{
           const row=document.createElement('div'); row.className='puzzle-lb-row';
           row.innerHTML=`<div class="puzzle-lb-rank">${i<3?['🥇','🥈','🥉'][i]:u.rank}</div>
-            <div class="puzzle-lb-name">${escapeHtml(u.username)}</div>
+            <div class="puzzle-lb-name">${escapeHtml(u.username)}${pzOldSystemBadge(u)}</div>
             <div class="puzzle-lb-rating">${u.puzzleRating}</div>`;
           row.addEventListener('click',()=>openUserProfile(u.username));
           el.appendChild(row);
@@ -3406,14 +2846,14 @@ async function fetchTopicPuzzles(reset) {
   const listEl=document.getElementById('puzzle-list');
   const moreEl=document.getElementById('puzzle-load-more');
   if (!listEl) return;
-  if (reset) { listEl.innerHTML='<div style="padding:16px;color:var(--text-muted);font-size:13px">Загрузка...</div>'; pz.topicList=[]; }
+  if (reset) { listEl.innerHTML='<div style="padding:16px;color:var(--text-muted);font-size:13px">'+chT('puzzles.loading','Загрузка...')+'</div>'; pz.topicList=[]; }
   try {
     let url=`/puzzles?topic=${pz.topic.id}&limit=15&offset=${pz.offset}`;
     if (pz.difficulty) url+='&difficulty='+pz.difficulty;
     const puzzles=await apiGet(url);
     if (reset) listEl.innerHTML='';
     if (!puzzles.length && reset) {
-      listEl.innerHTML='<div style="padding:24px;text-align:center;color:var(--text-muted);font-size:14px">Задач пока нет</div>';
+      listEl.innerHTML='<div style="padding:24px;text-align:center;color:var(--text-muted);font-size:14px">'+chT('puzzles.empty_topic','Задач пока нет')+'</div>';
       if(moreEl) moreEl.style.display='none'; return;
     }
     const base=pz.offset;
@@ -3427,8 +2867,8 @@ async function fetchTopicPuzzles(reset) {
         <div class="puzzle-list-info">
           <div class="puzzle-list-title">${escapeHtml(p.title)}</div>
           <div class="puzzle-list-meta">
-            <span class="puzzle-diff-badge ${p.difficulty}">${{easy:'🟢 Лёгкая',medium:'🟡 Средняя',hard:'🔴 Сложная'}[p.difficulty]||p.difficulty}</span>
-            ${p.playCount?`<span>Решено: ${p.correctCount}/${p.playCount}</span>`:''}
+            <span class="puzzle-diff-badge ${p.difficulty}">${pzDiffLabel(p.difficulty)}</span>
+            ${p.playCount?`<span>${chT('puzzles.solved_count','Решено: {count}').replace('{count}', p.correctCount+'/'+p.playCount)}</span>`:''}
           </div>
         </div>
         <div style="font-size:18px">${st==='solved'?'✅':st==='attempted'?'❌':'⬜'}</div>`;
@@ -3451,13 +2891,42 @@ function filterPuzzleDiff(diff) {
   fetchTopicPuzzles(true);
 }
 
+// Серверная сессия задачи: позицию и результат ведёт сервер, клиент шлёт только ходы.
+async function pzStartSession(puzzle) {
+  if (!currentUser || !puzzle || !puzzle.id) return;
+  try { await apiPost('/puzzles/' + puzzle.id + '/start', {}); } catch (e) { /* первый ход создаст сессию сам */ }
+}
+
+// Откат последнего хода игрока (сервер ход не принял или нет связи).
+function pzRollbackLastPlayerMove() {
+  pz._history.pop();
+  const last = pz._history[pz._history.length - 1];
+  pz.board = last ? [...last.board] : pzFenToBoard(pz.puzzle.fen);
+  pz.lastMove = last ? last.lastMove : null;
+  pz.selected = null;
+  pz._historyIdx = -1;
+  pz.playerTurn = pzBoardTurn(pz.puzzle.fen);
+  const ml = document.getElementById('puzzle-moves-list');
+  if (ml) ml.textContent = pz._history.filter(h => h.byPlayer).map(h => h.label).join(' ') || '—';
+  const fb = document.getElementById('puzzle-feedback');
+  if (fb) fb.style.display = 'none';
+  pzComputeLegalDests();
+  pzRender();
+}
+
 function openPuzzleSolve(puzzle, topic) {
   pz.puzzle=puzzle; pz.solved=false; pz.selected=null; pz.lastMove=null; pz.flipped=false; pz._moveIndex=0; pz._autoPlaying=false;
   pz._history=[]; pz._historyIdx=-1; pz._failed=false;
+  pz.topic=topic;
   pz.board=pzFenToBoard(puzzle.fen);
   pz.playerTurn=pzBoardTurn(puzzle.fen);
   if (pz.playerTurn==='b') pz.flipped=true;
   pzComputeLegalDests();
+  // F5-restore (issue, исправлено): задача жила только в памяти и умирала при
+  // перезагрузке страницы — на /puzzle-solve оставалась пустая рамка доски.
+  // Кэшируем задачу в sessionStorage, чтобы pages['puzzle-solve'] мог
+  // восстановить её после F5.
+  try { sessionStorage.setItem('ch_current_puzzle', JSON.stringify({ puzzle, topic: topic || null })); } catch (e) {}
   const topicEl=document.getElementById('puzzle-solve-topic');
   const titleEl=document.getElementById('puzzle-solve-title');
   const descEl=document.getElementById('puzzle-solve-desc');
@@ -3466,18 +2935,23 @@ function openPuzzleSolve(puzzle, topic) {
   const mlEl=document.getElementById('puzzle-moves-list');
   if(topicEl) topicEl.textContent=topic?topic.icon+' '+topic.name:'';
   if(titleEl) titleEl.textContent=puzzle.title;
-  if(descEl)  descEl.textContent=puzzle.description||'Найди лучший ход';
-  if(diffEl)  { diffEl.textContent={easy:'🟢 Лёгкая',medium:'🟡 Средняя',hard:'🔴 Сложная'}[puzzle.difficulty]||''; diffEl.className='puzzle-diff-badge '+(puzzle.difficulty||''); }
-  if(turnEl)  turnEl.textContent='Ход: '+(pz.playerTurn==='w'?'⬜ Белые':'⬛ Чёрные');
+  if(descEl)  descEl.textContent=puzzle.description||chT('puzzles.find_best_move','Найди лучший ход');
+  if(diffEl)  { diffEl.textContent=pzDiffLabel(puzzle.difficulty); diffEl.className='puzzle-diff-badge '+(puzzle.difficulty||''); }
+  if(turnEl)  turnEl.textContent=chT('puzzles.turn_prefix','Ход:')+' '+(pz.playerTurn==='w'?chT('puzzles.turn_white','⬜ Белые'):chT('puzzles.turn_black','⬛ Чёрные'));
   if(mlEl)    mlEl.textContent='—';
   const fb=document.getElementById('puzzle-feedback'); if(fb) fb.style.display='none';
   const nb=document.getElementById('puzzle-nav-btns'); if(nb) nb.style.display='none';
   const rc=document.getElementById('puzzle-rating-change'); if(rc) rc.style.display='none';
   showPage('puzzle-solve');
+  pz._startP = pzStartSession(puzzle);
   setTimeout(()=>pzRender(), 60);
 }
 
-function goBackFromPuzzle() { showPage(pz.topic ? 'puzzle-topic' : 'puzzles'); }
+function goBackFromPuzzle() {
+  // F5-restore: ушли из задачи — кэш в sessionStorage больше не нужен
+  try { sessionStorage.removeItem('ch_current_puzzle'); } catch (e) {}
+  showPage(pz.topic ? 'puzzle-topic' : 'puzzles');
+}
 
 async function puzzleNext() {
   const next = pz.topicList[pz.idx + 1];
@@ -3489,7 +2963,7 @@ async function puzzleNext() {
   // Дошли до конца загруженного списка — грузим ещё автоматически
   try {
     const loadingFb = document.getElementById('puzzle-feedback');
-    if (loadingFb) { loadingFb.style.display='block'; loadingFb.className='puzzle-feedback'; loadingFb.textContent='⏳ Загружаем следующие задачи...'; }
+    if (loadingFb) { loadingFb.style.display='block'; loadingFb.className='puzzle-feedback'; loadingFb.textContent=chT('puzzles.loading_more','⏳ Загружаем следующие задачи...'); }
 
     let url = `/puzzles?topic=${pz.topic.id}&limit=15&offset=${pz.offset}`;
     if (pz.difficulty) url += '&difficulty=' + pz.difficulty;
@@ -3498,7 +2972,7 @@ async function puzzleNext() {
     if (loadingFb) loadingFb.style.display = 'none';
 
     if (!newPuzzles || !newPuzzles.length) {
-      toast('Задачи в этой теме закончились!', 'info');
+      toast(chT('puzzles.toast_topic_empty','Задачи в этой теме закончились!'), 'info');
       return;
     }
 
@@ -3519,8 +2993,8 @@ async function puzzleNext() {
           <div class="puzzle-list-info">
             <div class="puzzle-list-title">${escapeHtml(p.title)}</div>
             <div class="puzzle-list-meta">
-              <span class="puzzle-diff-badge ${p.difficulty}">${{easy:'🟢 Лёгкая',medium:'🟡 Средняя',hard:'🔴 Сложная'}[p.difficulty]||p.difficulty}</span>
-              ${p.playCount?`<span>Решено: ${p.correctCount}/${p.playCount}</span>`:''}
+              <span class="puzzle-diff-badge ${p.difficulty}">${pzDiffLabel(p.difficulty)}</span>
+              ${p.playCount?`<span>${chT('puzzles.solved_count','Решено: {count}').replace('{count}', p.correctCount+'/'+p.playCount)}</span>`:''}
             </div>
           </div>
           <div style="font-size:18px">${st==='solved'?'✅':st==='attempted'?'❌':'⬜'}</div>`;
@@ -3538,7 +3012,59 @@ async function puzzleNext() {
 
   } catch(e) {
     console.error('[puzzleNext auto-load]', e);
-    toast('Ошибка загрузки следующих задач', 'error');
+    toast(chT('puzzles.toast_load_error','Ошибка загрузки следующих задач'), 'error');
+  }
+}
+
+// Пометка у ников, чей рейтинг набран по старой системе и ещё не сброшен.
+function pzOldSystemBadge(u) {
+  if (!u || !u.oldSystem) return '';
+  return '<span title="' + escapeHtml(chT('puzzles.lb_old_system_hint', 'Рейтинг набран по старой системе подсчёта и несопоставим с новым')) + '" ' +
+    'style="margin-left:6px;font-size:10px;font-weight:700;padding:2px 7px;border-radius:999px;white-space:nowrap;' +
+    'background:rgba(231,76,60,.14);color:#e74c3c;border:1px solid rgba(231,76,60,.35);vertical-align:middle">' +
+    escapeHtml(chT('puzzles.lb_old_system', 'OLD Rating System')) + '</span>';
+}
+
+// Баннер с кнопкой сброса — показывается только тем, кто ещё на старой системе.
+async function pzRenderRatingResetBox(listEl) {
+  const panel = listEl && listEl.parentElement;
+  if (!panel || !panel.parentElement) return;
+  const old = document.getElementById('puzzle-rating-reset-box');
+  if (old) old.remove();
+  if (!currentUser) return;
+  let st;
+  try { st = await apiGet('/puzzles/rating/status'); } catch (e) { return; }
+  if (!st || !st.canReset) return;
+
+  const box = document.createElement('div');
+  box.id = 'puzzle-rating-reset-box';
+  box.style.cssText = 'display:flex;gap:14px;align-items:center;justify-content:space-between;flex-wrap:wrap;margin-bottom:14px;padding:14px 16px;border-radius:14px;border:1px solid rgba(201,168,76,.35);background:linear-gradient(120deg,rgba(201,168,76,.12),rgba(201,168,76,.03))';
+  box.innerHTML =
+    '<div style="min-width:220px;flex:1;font-size:13px;line-height:1.5;color:var(--text-secondary)">' +
+      '<div style="font-weight:700;color:var(--text-primary);margin-bottom:2px">' + escapeHtml(chT('puzzles.reset_title', 'Новая система рейтинга (Glicko-2)')) + '</div>' +
+      escapeHtml(chT('puzzles.reset_text', 'Твой рейтинг набран по старой системе. Сбрось его, чтобы начать с нуля по новой.')) +
+    '</div>';
+  const btn = document.createElement('button');
+  btn.className = 'btn btn-primary btn-sm';
+  btn.textContent = chT('puzzles.reset_btn', 'Сбросить старый рейтинг');
+  btn.addEventListener('click', () => pzResetOldRating(btn));
+  box.appendChild(btn);
+  panel.parentElement.insertBefore(box, panel);
+}
+
+async function pzResetOldRating(btn) {
+  const ok = confirm(chT('puzzles.reset_confirm', 'Сбросить старый рейтинг задач и начать с 1200 по новой системе? Это действие необратимо. Решённые задачи останутся.'));
+  if (!ok) return;
+  if (btn) btn.disabled = true;
+  try {
+    const r = await apiPost('/puzzles/rating/reset', {});
+    if (currentUser) currentUser.puzzle_rating = r && r.rating != null ? r.rating : 1200;
+    toast(chT('puzzles.reset_done', 'Рейтинг сброшен — начинаем с 1200 по новой системе'), 'success');
+    const box = document.getElementById('puzzle-rating-reset-box');
+    if (box) box.remove();
+    loadPuzzleLeaderboardFull();
+  } catch (e) {
+    if (btn) btn.disabled = false;
   }
 }
 
@@ -3547,11 +3073,11 @@ async function loadPuzzleLeaderboardFull() {
   if (!el) return;
   try {
     const lb=await apiGet('/puzzles/leaderboard');
-    if (!lb.length) { el.innerHTML='<div style="padding:20px;text-align:center;color:var(--text-muted)">Нет данных</div>'; return; }
+    if (!lb.length) { el.innerHTML='<div style="padding:20px;text-align:center;color:var(--text-muted)">'+chT('puzzles.lb_empty_full','Нет данных')+'</div>'; return; }
     el.innerHTML='';
     const header=document.createElement('div');
     header.style.cssText='display:grid;grid-template-columns:44px 1fr 80px 80px 60px;padding:10px 16px;border-bottom:1px solid var(--border);font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);font-weight:700';
-    header.innerHTML='<div>#</div><div>Игрок</div><div style="text-align:right">Рейтинг</div><div style="text-align:right">Решено</div><div style="text-align:right">%</div>';
+    header.innerHTML='<div>#</div><div>'+chT('puzzles.lb_player','Игрок')+'</div><div style="text-align:right">'+chT('puzzles.lb_rating','Рейтинг')+'</div><div style="text-align:right">'+chT('puzzles.lb_solved','Решено')+'</div><div style="text-align:right">%</div>';
     el.appendChild(header);
     lb.forEach((u,i)=>{
       const row=document.createElement('div');
@@ -3559,14 +3085,15 @@ async function loadPuzzleLeaderboardFull() {
       row.onmouseenter=()=>{ row.style.background='rgba(255,255,255,0.04)'; };
       row.onmouseleave=()=>{ row.style.background=''; };
       row.innerHTML=`<div style="font-weight:800;font-size:13px">${i<3?['🥇','🥈','🥉'][i]:u.rank}</div>
-        <div style="font-weight:600;font-size:14px">${escapeHtml(u.username)}</div>
+        <div style="font-weight:600;font-size:14px">${escapeHtml(u.username)}${pzOldSystemBadge(u)}</div>
         <div style="text-align:right;font-weight:700;color:var(--accent)">${u.puzzleRating}</div>
         <div style="text-align:right;font-size:13px;color:var(--text-secondary)">${u.puzzleSolved}</div>
         <div style="text-align:right;font-size:13px;color:var(--text-muted)">${u.accuracy}%</div>`;
       row.addEventListener('click',()=>openUserProfile(u.username));
       el.appendChild(row);
     });
-  } catch(e) { el.innerHTML='<div style="padding:20px;text-align:center;color:var(--red)">Ошибка загрузки</div>'; }
+    pzRenderRatingResetBox(el);
+  } catch(e) { el.innerHTML='<div style="padding:20px;text-align:center;color:var(--red)">'+chT('puzzles.lb_error','Ошибка загрузки')+'</div>'; }
 }
 
 // ─── DM УВЕДОМЛЕНИЕ НА САЙТЕ (показывается на всех страницах) ──
@@ -3629,82 +3156,6 @@ function showDmNotification(fromUsername, preview) {
     window.location = '/inbox/' + encodeURIComponent(fromUsername);
   });
 
-  // ─── Emoji picker (глобальный) ───────────────────────────────
-const EMOJIS = [
-  '😀', '😃', '😄', '😁', '😆', '😅', '😂', '🤣', '😊', '😇', '🙂', '🙃', '😉', '😌', '😍', '🥰',
-  '😘', '😗', '😙', '😚', '😋', '😛', '😝', '😜', '🤪', '🤨', '🧐', '🤓', '😎', '🤩', '🥳', '😏',
-  '😒', '😞', '😔', '😟', '😕', '🙁', '☹️', '😣', '😖', '😫', '😩', '🥺', '😢', '😭', '😤', '😠',
-  '😡', '🤬', '🤯', '😳', '🥵', '🥶', '😱', '😨', '😰', '😥', '😓', '🤗', '🤔', '🤭', '🤫', '🤥',
-  '😶', '😐', '😑', '😬', '🙄', '😯', '😦', '😧', '😮', '😲', '🥱', '😴', '🤤', '😪', '😵', '🤐',
-  '🥴', '🤢', '🤮', '🤧', '😷', '🤒', '🤕', '🤑', '🤠', '😈', '👿', '👹', '👺', '💩', '👻', '💀',
-  '☠️', '👽', '🤖', '🎃', '😺', '😸', '😹', '😻', '😼', '😽', '🙀', '😿', '😾', '🙈', '🙉', '🙊',
-  '🐶', '🐱', '🐭', '🐹', '🐰', '🦊', '🐻', '🐼', '🐨', '🐯', '🦁', '🐮', '🐷', '🐸', '🐒', '🐔',
-  '🐧', '🐦', '🐤', '🐣', '🐥', '🐺', '🐗', '🐴', '🦄', '🐝', '🐛', '🦋', '🐌', '🐞', '🐜', '🦟',
-  '🦗', '🕷️', '🦂', '🐢', '🐍', '🦎', '🐙', '🦑', '🦐', '🦞', '🐠', '🐟', '🐡', '🐬', '🐳', '🐋',
-  '🦈', '🐊', '🐅', '🐆', '🦓', '🦍', '🦧', '🦣', '🐘', '🦛', '🦏', '🐪', '🐫', '🦒', '🦘', '🐃',
-  '🐂', '🐄', '🐎', '🐖', '🐏', '🐑', '🦙', '🐐', '🦌', '🐕', '🐩', '🐈', '🐓', '🦃', '🐇', '🐁',
-  '🐀', '🐿️', '🦔', '🐾', '🐉', '🐲', '🌵', '🎄', '🌲', '🌳', '🌴', '🌿', '🍀', '🍁', '🍂', '🍃',
-  '🍇', '🍈', '🍉', '🍊', '🍋', '🍌', '🍍', '🥭', '🍎', '🍏', '🍐', '🍑', '🍒', '🍓', '🥝', '🍅',
-  '🥥', '🥑', '🍆', '🥔', '🥕', '🌽', '🌶️', '🥒', '🥬', '🥦', '🧄', '🧅', '🍄', '🥜', '🌰', '🍞',
-  '🥐', '🥖', '🥨', '🥯', '🥞', '🧇', '🧀', '🍖', '🍗', '🥩', '🥓', '🍔', '🍟', '🍕', '🌭', '🥪',
-  '🌮', '🌯', '🥙', '🧆', '🥚', '🍳', '🥘', '🍲', '🥣', '🥗', '🍿', '🧈', '🧂', '🥫', '🍱', '🍘',
-  '🍙', '🍚', '🍛', '🍜', '🍝', '🍠', '🍢', '🍣', '🍤', '🍥', '🥮', '🍡', '🥟', '🥠', '🥡', '🦀',
-  '🦞', '🦐', '🦑', '🐙', '🍦', '🍧', '🍨', '🍩', '🍪', '🎂', '🍰', '🧁', '🥧', '🍫', '🍬', '🍭',
-  '🍮', '🍯', '🥛', '🍼', '🥤', '🧃', '🧉', '🧊', '🍺', '🍻', '🥂', '🥃', '🥄', '🍴', '🍽️', '🥢'
-];
-
-window.openEmojiPicker = function() {
-  const grid = document.getElementById('emoji-grid');
-  if (!grid) {
-    console.error('emoji-grid не найден');
-    return;
-  }
-  grid.innerHTML = '';
-  for (const em of EMOJIS) {
-    const div = document.createElement('div');
-    div.textContent = em;
-    div.style.cssText = 'cursor:pointer; font-size:28px; padding:4px; transition:transform 0.1s';
-    div.onmouseenter = () => div.style.transform = 'scale(1.1)';
-    div.onmouseleave = () => div.style.transform = 'scale(1)';
-    div.onclick = () => window.selectEmoji(em);
-    grid.appendChild(div);
-  }
-  if (typeof openModal === 'function') openModal('modal-emoji');
-  else console.error('openModal не определена');
-};
-
-window.selectEmoji = async function(emoji) {
-  if (!currentUser) {
-    toast('Войдите, чтобы сменить эмодзи', 'info');
-    return;
-  }
-  try {
-    const res = await fetch('/api/user/emoji', {
-      method: 'POST',
-      credentials: 'same-origin',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ emoji })
-    });
-    if (!res.ok) {
-      const err = await res.json();
-      throw new Error(err.error || 'Ошибка');
-    }
-    const data = await res.json();
-    if (currentUser) currentUser.emoji = emoji;
-    if (window.CH) CH.setCurrentUser(currentUser);
-    // Обновить везде
-    const preview = document.getElementById('current-emoji-preview');
-    if (preview) preview.textContent = emoji || '';
-    const profileEmoji = document.getElementById('profile-emoji');
-    if (profileEmoji) profileEmoji.textContent = emoji || '';
-    // Перезагрузить чат
-    if (typeof initGlobalChat === 'function') initGlobalChat();
-    if (typeof closeModal === 'function') closeModal('modal-emoji');
-    toast('Эмодзи сохранён!', 'success');
-  } catch (err) {
-    toast(err.message, 'error');
-  }
-};
 
   document.body.appendChild(el);
 

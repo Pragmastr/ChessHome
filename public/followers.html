@@ -1,6 +1,8 @@
 <!DOCTYPE html>
 <html lang="ru">
 <head>
+<script src="/js/utils.js"></script>
+<script src="/js/api.js"></script>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Подписчики — Chess Home</title>
@@ -90,29 +92,19 @@
 </div>
 
 <script>
-  const API = '/api';
   // Авторизация теперь через HttpOnly-cookie (ch_token), а не localStorage —
   // куки отправляются автоматически при credentials: 'include'.
 
-  function esc(s) {
-    return String(s || '').replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
-  }
 
-  async function apiGet(path) {
-    const res = await fetch(API + path, {
-      credentials: 'include'
-    });
-    if (!res.ok) throw new Error((await res.json()).error || 'Ошибка');
-    return res.json();
-  }
+  // apiGet — глобальная, из /js/api.js (2А, унификация)
 
   async function load() {
     const path = location.pathname;
     const isFollowers = path.includes('/followers/');
     const username = decodeURIComponent(path.split('/').pop());
     document.getElementById('page-title').textContent = isFollowers 
-      ? `Подписчики ${esc(username)}` 
-      : `Подписки ${esc(username)}`;
+      ? `Подписчики ${escapeHtml(username)}` 
+      : `Подписки ${escapeHtml(username)}`;
     
     try {
       const endpoint = isFollowers ? 'followers' : 'following';
@@ -126,10 +118,10 @@
       
       container.innerHTML = data.map(u => `
         <div class="user-item" onclick="window.location='/profile/${encodeURIComponent(u.username)}'">
-          <div class="user-avatar">${esc(u.username[0].toUpperCase())}</div>
+          <div class="user-avatar">${escapeHtml(u.username[0].toUpperCase())}</div>
           <div class="user-info">
             <div class="user-name">
-              ${esc(u.username)} 
+              ${escapeHtml(u.username)} 
               ${u.online ? '<span class="online-dot"></span>' : ''}
             </div>
             <div class="user-rating">Рейтинг: ${u.rating || '—'}</div>

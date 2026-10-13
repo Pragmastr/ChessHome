@@ -1,6 +1,8 @@
 <!DOCTYPE html>
 <html lang="ru">
 <head>
+<script src="/js/utils.js"></script>
+<script src="/js/toast.js"></script>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Управление турниром — Chess Home</title>
@@ -18,6 +20,7 @@
       margin-bottom: 28px;
       display: flex;
       align-items: center;
+      flex-wrap: wrap; /* issue #22: кнопки не выталкиваются за экран на мобильных */
       gap: 16px;
     }
     .admin-hero-icon { font-size: 36px; }
@@ -69,7 +72,8 @@
       display: flex; align-items: center; gap: 8px;
       background: rgba(224,85,85,.08); border: 1px solid rgba(224,85,85,.25);
       border-radius: 8px; padding: 8px 14px; font-size: 13px; color: var(--red);
-      font-weight: 600; flex: 1;
+      font-weight: 600; flex: 1; min-width: 0;
+      overflow-wrap: anywhere; word-break: break-word; /* issue #22: длинные ники в чёрном списке */
     }
     .bl-remove { margin-left: auto; cursor: pointer; opacity: .7; font-size: 16px; }
     .bl-remove:hover { opacity: 1; }
@@ -77,7 +81,8 @@
 
     /* Participants */
     .p-row {
-      display: flex; align-items: center; gap: 12px;
+      display: flex; align-items: center; flex-wrap: wrap; /* issue #22 */
+      gap: 8px 12px;
       padding: 10px 0; border-bottom: 1px solid var(--border);
     }
     .p-row:last-child { border-bottom: none; }
@@ -88,14 +93,13 @@
       font-size: 13px; font-weight: 700; color: #000; flex-shrink: 0;
     }
     .p-banned { opacity: .4; }
-    .p-name { flex: 1; font-weight: 600; font-size: 14px; }
+    .p-name { flex: 1; min-width: 0; overflow-wrap: anywhere; word-break: break-word; font-weight: 600; font-size: 14px; }
     .p-score { font-size: 13px; color: var(--accent); font-weight: 700; margin-right: 8px; }
     .badge { display: inline-flex; align-items: center; gap: 4px; padding: 2px 10px; border-radius: 20px; font-size: 10px; font-weight: 700; }
     .badge-red { background: rgba(224,85,85,.12); color: var(--red); border: 1px solid rgba(224,85,85,.25); }
     .badge-green { background: rgba(76,175,114,.12); color: var(--green); border: 1px solid rgba(76,175,114,.25); }
 
     /* Toast */
-    #toast-container { position: fixed; bottom: 28px; right: 24px; z-index: 9999; display: flex; flex-direction: column; gap: 10px; pointer-events: none; }
     .toast { padding: 12px 20px; border-radius: 10px; font-size: 14px; font-weight: 600; background: var(--bg-card); border: 1px solid var(--border); box-shadow: var(--shadow); animation: slideRight .3s ease; pointer-events: all; }
     .toast.success { border-color: var(--green); color: var(--green); }
     .toast.error { border-color: var(--red); color: var(--red); }
@@ -121,7 +125,6 @@
   </div>
 </div>
 
-<div id="toast-container"></div>
 
 <script>
 const API   = '/api';
@@ -224,7 +227,7 @@ function render() {
     <div class="admin-hero">
       <div class="admin-hero-icon">🛡</div>
       <div>
-        <div class="admin-hero-title">Управление: ${escHtml(tData.name)}</div>
+        <div class="admin-hero-title">Управление: ${escapeHtml(tData.name)}</div>
         <div class="admin-hero-sub">Статус: ${status} · ID: ${tData.id}</div>
       </div>
       <div style="margin-left:auto;display:flex;gap:8px">
@@ -240,15 +243,15 @@ function render() {
       <div class="form-grid">
         <div class="form-group full">
           <label class="form-label">Название</label>
-          <input type="text" class="form-input" id="e-name" value="${escAttr(tData.name)}" maxlength="60">
+          <input type="text" class="form-input" id="e-name" value="${escapeHtml(tData.name)}" maxlength="60">
         </div>
         <div class="form-group full">
           <label class="form-label">Описание</label>
-          <textarea class="form-textarea" id="e-desc" maxlength="300">${escHtml(tData.description||'')}</textarea>
+          <textarea class="form-textarea" id="e-desc" maxlength="300">${escapeHtml(tData.description||'')}</textarea>
         </div>
         <div class="form-group">
           <label class="form-label">Контроль времени</label>
-          <input type="text" class="form-input" id="e-tc" value="${escAttr(tData.timeControl)}">
+          <input type="text" class="form-input" id="e-tc" value="${escapeHtml(tData.timeControl)}">
         </div>
         <div class="form-group">
           <label class="form-label">Длительность (мин)</label>
@@ -289,8 +292,8 @@ function render() {
           bl.map(u => `
           <div class="bl-row">
             <div class="bl-tag">
-              ⛔ ${escHtml(u)}
-              <span class="bl-remove" onclick="removeFromBlacklist('${escAttr(u)}')">✕</span>
+              ⛔ ${escapeHtml(u)}
+              <span class="bl-remove" onclick="removeFromBlacklist('${escapeHtml(u)}')">✕</span>
             </div>
           </div>`).join('')}
       </div>
@@ -304,13 +307,13 @@ function render() {
         <div class="p-row ${p.anticheatBanned ? 'p-banned' : ''}">
           <div class="p-avatar">${p.username[0].toUpperCase()}</div>
           <div class="p-name">
-            <a href="/profile/${encodeURIComponent(p.username)}" style="color:inherit;text-decoration:none">${escHtml(p.username)}</a>
+            <a href="/profile/${encodeURIComponent(p.username)}" style="color:inherit;text-decoration:none">${escapeHtml(p.username)}</a>
             ${p.anticheatBanned ? '<span class="badge badge-red" style="margin-left:6px">⚠️ АНТИЧИТ БАН</span>' : ''}
             ${p.left && !p.anticheatBanned ? '<span class="badge" style="background:rgba(90,94,120,.15);color:var(--text-muted);border:1px solid var(--border);margin-left:6px">Покинул</span>' : ''}
           </div>
           <span class="p-score">${p.score} очков</span>
           <span style="font-size:12px;color:var(--text-muted)">${p.wins}W / ${p.draws}D / ${p.losses}L</span>
-          ${!p.anticheatBanned && !p.left ? `<button class="btn btn-secondary" style="padding:5px 12px;font-size:12px" onclick="kickParticipant('${escAttr(p.username)}')">Исключить</button>` : ''}
+          ${!p.anticheatBanned && !p.left ? `<button class="btn btn-secondary" style="padding:5px 12px;font-size:12px" onclick="kickParticipant('${escapeHtml(p.username)}')">Исключить</button>` : ''}
         </div>`).join('')}
     </div>
   `;
@@ -407,16 +410,8 @@ async function deleteTournament() {
   } catch(e) { toast(e.message, 'error'); }
 }
 
-// ── UTILS ──
-function escHtml(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
-function escAttr(s) { return String(s||'').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
-function toast(msg, type='success') {
-  const el = document.createElement('div');
-  el.className = 'toast ' + type;
-  el.textContent = msg;
-  document.getElementById('toast-container').appendChild(el);
-  setTimeout(() => el.remove(), 3500);
-}
+// ── UTILS ── escapeHtml() — глобальная, из /js/utils.js (экранирует и кавычки —
+// заменяет и старые escHtml/escAttr); toast() — из /js/toast.js
 
 init();
 </script>

@@ -6,11 +6,6 @@ const StockfishAnalyzer = (() => {
   let sf = null;
   let isReady = false;
   let analyzing = false;
-  let currentCallback = null;
-  // Домашний воркер (см. worker-client/) — сильнее и не грузит браузер
-  // посетителя. Пробуем его первым; если недоступен/все заняты — сервер
-  // сразу ответит analyze_unavailable, и просто продолжаем локально,
-  // как раньше. Ни один из путей не обязателен для работы другого.
   let usingRemote = false;
   let remoteFallbackTimer = null;
   let pendingRemote = null; // { fen, depth } — что запросили удалённо, на случай фолбэка
@@ -59,10 +54,17 @@ const StockfishAnalyzer = (() => {
       if (bestMove && bestMove !== '(none)') {
         document.getElementById('best-move-uci').textContent = formatUCIMove(bestMove);
       }
+      if (lastParsed && typeof AICommentator !== 'undefined') {
+        AICommentator.onBestMove(lastParsed.evalNum, lastParsed.mate);
+        lastParsed = null;
+      }
       setEngineStatus('ready');
       analyzing = false;
     }
   }
+
+  // Последняя распарсенная инфо-строка (финальная оценка текущего поиска)
+  let lastParsed = null;
 
   function parseInfo(line) {
     const tokens = line.split(' ');
@@ -96,7 +98,15 @@ const StockfishAnalyzer = (() => {
 
     // Check if it's black's perspective
     const isBlackTurn = line.includes(' bm ') || checkBlackTurn();
-    if (isBlackTurn) { evalNum = -evalNum; evalText = evalNum > 0 ? '+' + evalNum.toFixed(2) : evalNum.toFixed(2); }
+    if (isBlackTurn) {
+      evalNum = -evalNum;
+      if (scoreMate) {
+        const m = Math.abs(parseInt(scoreMate));
+        evalText = evalNum > 0 ? ('M' + m) : ('M-' + m);
+      } else {
+        evalText = evalNum > 0 ? '+' + evalNum.toFixed(2) : evalNum.toFixed(2);
+      }
+    }
 
     const evalEl = document.getElementById('eval-score');
     if (evalEl) {
@@ -112,6 +122,9 @@ const StockfishAnalyzer = (() => {
 
     // Update eval bar
     updateEvalBar(evalNum);
+
+    // Запоминаем финальную оценку для AI-комментатора (после bestmove)
+    lastParsed = { evalNum, mate: !!scoreMate };
   }
 
   function checkBlackTurn() {
@@ -130,7 +143,6 @@ const StockfishAnalyzer = (() => {
     // Сначала пробуем домашний воркер — если сокет подключён, шлём запрос
     // и ждём подтверждения. Если за 1.5с сервер не откликнулся (или сразу
     // прислал analyze_unavailable — воркеров нет/все заняты), уходим на
-    // локальный анализ в браузере, как было раньше.
     if (typeof socket !== 'undefined' && socket && socket.connected) {
       usingRemote = true;
       pendingRemote = { fen, depth };
@@ -218,10 +230,98 @@ function requestAnalysis() {
   StockfishAnalyzer.analyze(fen, 20);
 }
 
-// Auto-init when analysis page is opened
-pages['analysis'] = () => {
-  chessBoard.loadAnalysis();
-  if (!StockfishAnalyzer.isReady()) {
-    StockfishAnalyzer.init();
+// ══════════════════════════════════════════════════════════════
+const AICommentator = (() => {
+  let lastEval = null;      // последняя финальная оценка (перспектива белых)
+  let lastPhraseAt = 0;     // антиспам: не чаще раза в 2.5 секунды
+  const MIN_INTERVAL = 2500;
+
+  function t(key, fallback) {
+    try {
+      const v = window.CH_I18N ? window.CH_I18N.t(key) : undefined;
+      if (v && v !== key) return v;
+    } catch (e) { /* i18n недоступен */ }
+    return fallback;
   }
-};
+
+  function rand(n) { return 1 + Math.floor(Math.random() * n); }
+
+  function say(text) {
+    const box = document.getElementById('ai-commentary');
+    if (!box || !text) return;
+    box.textContent = text;
+    // Перезапускаем анимацию появления фразы
+    box.classList.remove('ai-say');
+    void box.offsetWidth;
+    box.classList.add('ai-say');
+  }
+
+  // Вызывается после bestmove: evalNum — оценка в перспективе белых,
+  // isMate — движок нашёл мат в текущей позиции.
+  function onBestMove(evalNum, isMate) {
+    if (typeof evalNum !== 'number' || !isFinite(evalNum)) return;
+    const now = Date.now();
+    if (now - lastPhraseAt < MIN_INTERVAL) { lastEval = evalNum; return; }
+
+    const prev = lastEval;
+    lastEval = evalNum;
+
+    // Первая позиция сессии — иногда здороваемся
+    if (prev === null) {
+      if (Math.random() < 0.5) { lastPhraseAt = now; say(t('ai.phrase_greeting_' + rand(3), null)); }
+      return;
+    }
+
+    if (isMate) {
+      lastPhraseAt = now;
+      say(t('ai.phrase_mate_' + rand(3), null));
+      return;
+    }
+
+    const delta = evalNum - prev;
+    const absDelta = Math.abs(delta);
+
+    if (absDelta >= 3) {
+      lastPhraseAt = now;
+      say(t((delta > 0 ? 'ai.phrase_blunder_white_' : 'ai.phrase_blunder_black_') + rand(3), null));
+      return;
+    }
+    if (absDelta >= 1.5) {
+      lastPhraseAt = now;
+      say(t((delta > 0 ? 'ai.phrase_swing_white_' : 'ai.phrase_swing_black_') + rand(3), null));
+      return;
+    }
+    if (absDelta >= 0.7 && Math.random() < 0.6) {
+      lastPhraseAt = now;
+      say(t('ai.phrase_small_' + rand(3), null));
+      return;
+    }
+    // Позиция почти не изменилась — изредка вставляем нейтральную реплику
+    if (Math.random() < 0.1) {
+      lastPhraseAt = now;
+      say(t('ai.phrase_quiet_' + rand(4), null));
+    }
+  }
+
+  // Кнопка 🎲 — выдать фразу по запросу
+  function manual() {
+    const pool = Math.random();
+    let key;
+    if (pool < 0.4)      key = 'ai.phrase_quiet_' + rand(4);
+    else if (pool < 0.7) key = 'ai.phrase_greeting_' + rand(3);
+    else if (pool < 0.85) key = 'ai.phrase_small_' + rand(3);
+    else                 key = 'ai.phrase_idle_' + rand(3);
+    say(t(key, null));
+  }
+
+  function reset() { lastEval = null; }
+
+  return { onBestMove, manual, reset };
+})();
+
+// Кнопка «Ещё фразу» на странице анализа
+function nextAiPhrase() {
+  if (typeof AICommentator !== 'undefined') AICommentator.manual();
+}
+
+// Инициализацию страницы анализа выполняет единственный хук pages['analysis']

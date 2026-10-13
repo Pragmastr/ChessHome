@@ -5,7 +5,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Chess Home — время жизни</title>
-<script src="/js/header.js"></script>
+<script src="/js/utils.js"></script>
+  <script src="/js/header.js"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Unbounded:wght@300;700&display=swap" rel="stylesheet">
 <style>
@@ -539,10 +540,6 @@ body::after {
 
   // Инициализация хедера.
   // CH.initHeader() сам по себе не знает, залогинен ли пользователь —
-  // раньше это как-то читалось из localStorage, но токен теперь в
-  // HttpOnly-cookie, поэтому явно спрашиваем сервер через /api/me
-  // и передаём результат в CH.setCurrentUser, иначе хедер всегда
-  // будет показывать "Вход/Регистрация".
   if (window.CH) {
     CH.initHeader({ activePage: 'age' });
     CH.setActivePage('age');

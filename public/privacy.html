@@ -1,12 +1,14 @@
 <!DOCTYPE html>
 <html lang="ru">
 <head>
+<script src="/js/utils.js"></script>
+<script src="/js/api.js"></script>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Конфиденциальность — Chess Home</title>
   <link rel="stylesheet" href="/css/main.css">
   <script src="/js/header.js"></script>
-<link rel="icon" type="image/png" href="../img/logo/favicon.png">
+<link rel="icon" type="image/png" href="/img/logo/favicon.png">
 </head>
 <body>
 <!-- header injected by /js/header.js -->
@@ -48,6 +50,16 @@
         <li><strong>Токены авторизации:</strong> JWT-токен хранится в защищённой HttpOnly-cookie браузера (недоступной для JavaScript на странице). Срок действия токена — 7 дней, после чего требуется повторный вход.</li>
       </ul>
 
+      <h3>2.4 Данные для защиты от мультиаккаунтов и обхода блокировок</h3>
+      <p>Чтобы выявлять повторную регистрацию заблокированных пользователей и создание нескольких аккаунтов для обхода правил, при входе в аккаунт мы получаем и сохраняем на сервере технические признаки вашего устройства и браузера: идентификатор устройства из серверной cookie, IP-адрес и его подсеть, модель видеокарты и параметры графики, разрешение экрана и число ядер процессора, набор установленных шрифтов, результат тестовой отрисовки изображения и звука, часовой пояс и основной язык интерфейса.</p>
+      <ul>
+        <li>Признаки сохраняются в виде необратимых хэшей: по ним нельзя восстановить исходные значения или содержимое вашего устройства.</li>
+        <li>Браузер ничего не запоминает для этой цели (localStorage, sessionStorage и другие хранилища не используются): признаки вычисляются заново при каждом входе.</li>
+        <li>Результат используется только как вспомогательное свидетельство для модераторов. Автоматических блокировок на его основе не происходит, окончательное решение всегда принимает человек.</li>
+        <li>Срок хранения — 180 дней с момента последнего появления признака; при удалении аккаунта связанные с ним признаки удаляются.</li>
+        <li>Правовое основание — наш законный интерес в защите сервиса и честной игры.</li>
+      </ul>
+
       <h2>3. Для чего мы используем данные</h2>
       <ul>
         <li><strong>Предоставление сервиса:</strong> без хранения данных аккаунта невозможно обеспечить онлайн-игру, рейтинг и историю партий.</li>
@@ -82,6 +94,7 @@
         <li><strong>История партий:</strong> хранится бессрочно и является частью публичного профиля.</li>
         <li><strong>Личные сообщения:</strong> хранятся до удаления аккаунта одного из участников диалога.</li>
         <li><strong>Технические логи:</strong> 90 дней, после чего автоматически удаляются.</li>
+        <li><strong>Признаки устройства для защиты от мультиаккаунтов (раздел 2.4):</strong> 180 дней с момента последнего появления; удаляются при удалении аккаунта.</li>
         <li><strong>После удаления аккаунта:</strong> персональные данные удаляются в течение 30 дней. Анонимизированная игровая статистика (без привязки к имени) может быть сохранена для общей статистики платформы.</li>
       </ul>
 
@@ -89,6 +102,7 @@
       <p>Chess Home не использует сторонние cookies, рекламные трекеры или аналитические системы вроде Google Analytics. Мы используем только:</p>
       <ul>
         <li><strong>HttpOnly-cookie — токен авторизации:</strong> JWT-токен, позволяющий оставаться в системе без повторного ввода пароля. Хранится в защищённой cookie, недоступной для чтения из JavaScript (защита от кражи токена через XSS), и не передаётся третьим лицам.</li>
+        <li><strong>HttpOnly-cookie — идентификатор устройства:</strong> случайный идентификатор, который выдаёт сервер. Используется для защиты от мультиаккаунтов и обхода блокировок (раздел 2.4), недоступен для чтения из JavaScript. Срок хранения — до 5 лет.</li>
         <li><strong>localStorage — настройки интерфейса:</strong> выбранная тема доски, включённые/отключённые звуки и другие настройки сохраняются локально в браузере. На сервер не передаются.</li>
       </ul>
 
@@ -114,44 +128,15 @@
 </div>
 <div id="toast-container"></div>
 
-<!-- Баннер обновления политики -->
-<div id="policy-banner" style="display:none;position:fixed;bottom:24px;left:50%;transform:translateX(-50%);z-index:9999;background:#1a2a3a;border:1px solid #3a5a7a;border-radius:12px;padding:16px 24px;max-width:480px;width:calc(100% - 48px);box-shadow:0 8px 32px rgba(0,0,0,0.5);display:flex;flex-direction:column;gap:10px">
-  <div style="display:flex;align-items:flex-start;gap:12px">
-    <span style="font-size:22px;flex-shrink:0">📋</span>
-    <div>
-      <div style="font-weight:700;color:#e0e0e0;margin-bottom:4px">Мы обновили документы</div>
-      <div style="color:#a0b8c8;font-size:13px;line-height:1.5">Пользовательское соглашение и политика конфиденциальности обновлены 12 июня 2026 года. Продолжая использовать Chess Home, вы принимаете новые условия.</div>
-    </div>
-  </div>
-  <div style="display:flex;gap:8px;justify-content:flex-end">
-    <a href="/terms.html" style="font-size:13px;color:#7c9cbf;text-decoration:none;padding:6px 12px;border:1px solid #3a5a7a;border-radius:6px">Читать</a>
-    <button onclick="dismissPolicyBanner()" style="font-size:13px;background:#3a6a9a;color:#fff;border:none;border-radius:6px;padding:6px 16px;cursor:pointer">Понятно</button>
-  </div>
-</div>
+<!-- 4.5: разметка и скрипт баннера обновления документов перенесены в /js/header.js -->
 
 <script>
-// ── Policy update banner (one-time, cross-page via localStorage) ──
-const POLICY_VERSION = 'v1.1-2025-06-12';
-function dismissPolicyBanner() {
-  localStorage.setItem('ch_policy_seen', POLICY_VERSION);
-  const b = document.getElementById('policy-banner');
-  if (b) { b.style.transition='opacity 0.3s'; b.style.opacity='0'; setTimeout(()=>b.style.display='none',300); }
-}
-(function() {
-  if (localStorage.getItem('ch_policy_seen') !== POLICY_VERSION) {
-    const b = document.getElementById('policy-banner');
-    if (b) { b.style.display='flex'; }
-  }
-})();
-</script>
-<script>
-const API='/api';let currentUser=null;
-// Авторизация теперь через HttpOnly-cookie (ch_token) — не localStorage.
-function escapeHtml(s){if(!s)return'';return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+let currentUser=null;
+// Авторизация через HttpOnly-cookie (ch_token) — не localStorage.
+// apiGet/apiPost — глобальные, из /js/api.js (2А, унификация)
+// escapeHtml (P0, унификация): общая реализация в /js/utils.js
 function getSettings(){try{return JSON.parse(localStorage.getItem('ch_settings')||'{}');}catch{return{};}}
 function applySettings(){const s=getSettings();if(s.boardLight)document.documentElement.style.setProperty('--board-light',s.boardLight);if(s.boardDark)document.documentElement.style.setProperty('--board-dark',s.boardDark);}
-async function apiGet(path){const res=await fetch(API+path,{credentials:'include'});const data=await res.json();if(!res.ok)throw new Error(data.error||'Ошибка');return data;}
-async function apiPost(path,body){const res=await fetch(API+path,{method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const data=await res.json();if(!res.ok)throw new Error(data.error||'Ошибка');return data;}
 function toast(msg,type='info'){const c=document.getElementById('toast-container');const el=document.createElement('div');el.className='toast '+type;el.textContent=msg;c.appendChild(el);setTimeout(()=>el.remove(),3000);}
 function updateHeaderUI() {
   CH.setCurrentUser(currentUser);

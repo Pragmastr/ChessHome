@@ -188,6 +188,6 @@ This means anyone can study, modify, and redistribute the project, but if they r
 
 <div align="center">
 
-Built by **ChupikPupik**
+Built by **nesstyx**
 
 </div>
