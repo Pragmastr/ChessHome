@@ -50,7 +50,7 @@ const USER_MIN_RATING = 100;
 const PUZZLE_MIN_RATING = 100;
 const PUZZLE_MAX_RATING = 3500;
 const PUZZLE_START_RD = 150;
-const DIFF_RATING = { easy: 900, medium: 1300, hard: 1700 };
+const DIFF_RATING = { easy: 1050, medium: 1450, hard: 1850 };
 
 function g(phi) { return 1 / Math.sqrt(1 + 3 * phi * phi / (Math.PI * Math.PI)); }
 function expected(mu, muJ, phiJ) { return 1 / (1 + Math.exp(-g(phiJ) * (mu - muJ))); }
@@ -138,14 +138,6 @@ function rateAttempt(u, p, solved, now) {
   );
 
   
-  const deltaRating = newU.rating - u.rating;
-  if (solved) {
-    console.log('Увеличиваем рейтинг игрока на 25% больше');
-    newU.rating = u.rating + deltaRating * 1.25; 
-  } else {
-    console.log('Смягчаем падение рейтинга игрока на 25%');
-    newU.rating = u.rating + deltaRating * 0.75; 
-  }
 
   newU.rating = Math.max(USER_MIN_RATING, newU.rating);
   newP.rating = Math.min(PUZZLE_MAX_RATING, Math.max(PUZZLE_MIN_RATING, newP.rating));
