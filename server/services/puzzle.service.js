@@ -36,21 +36,21 @@ function D() {
 
 // ── Параметры Glicko-2 ─────────────────────────────────────────
 const SCALE = 173.7178;
-const TAU = 0.7;                 // «инерция» волатильности (0.3–1.2)
+const TAU = 0.5;                 // «инерция» волатильности (0.3–1.2)
 const MAX_RD = 250;              // потолок неопределённости (в т.ч. после долгого простоя)
 const USER_START_RD = 150;       // новичок: рейтинг двигается быстро, пока не «откалибруется»
-const MIN_RD_USER = 60;
-const MIN_RD_PUZZLE = 50;
-const MIN_VOL = 0.05;
-const MAX_VOL = 0.3;
-const DEFAULT_VOL = 0.12;
+const MIN_RD_USER = 45;
+const MIN_RD_PUZZLE = 30;
+const MIN_VOL = 0.01;
+const MAX_VOL = 0.2;
+const DEFAULT_VOL = 0.5;
 const PERIODS_PER_DAY = 0.2;     // 1 «период» = ~5 дней: столько растёт RD у тех, кто не заходит
 const USER_START_RATING = 1200;
 const USER_MIN_RATING = 100;
 const PUZZLE_MIN_RATING = 100;
 const PUZZLE_MAX_RATING = 3500;
 const PUZZLE_START_RD = 150;
-const DIFF_RATING = { easy: 900, medium: 1450, hard: 2100 };
+const DIFF_RATING = { easy: 900, medium: 1300, hard: 1700 };
 
 function g(phi) { return 1 / Math.sqrt(1 + 3 * phi * phi / (Math.PI * Math.PI)); }
 function expected(mu, muJ, phiJ) { return 1 / (1 + Math.exp(-g(phiJ) * (mu - muJ))); }
