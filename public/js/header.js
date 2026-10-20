@@ -22,6 +22,7 @@
   // (пока ключ не добавлен в словарь — показываем русский текст вместо «header.xxx»).
   const I18N_FALLBACK = {
     'header.nav_vs_computer': 'Игра с компьютером',
+    'header.nav_changelog': 'Обновления',
   };
   function t(key, vars) {
     const r = (window.CH_I18N && window.CH_I18N.t) ? window.CH_I18N.t(key, vars) : key;
@@ -92,6 +93,7 @@
         { id: 'stats',     i18nLabel: 'header.nav_stats', icon: '📊', href: '/stats', spa: false },
         { id: 'age',       i18nLabel: 'header.nav_age',    icon: '🎂', href: '/age', spa: false },
         { id: 'dev-diary', i18nLabel: 'header.nav_dev_diary', icon: '📔', href: '/dev-diary', spa: false },
+        { id: 'changelog', i18nLabel: 'header.nav_changelog', icon: '🆕', href: '/changelog', spa: false },
         { id: 'report',    i18nLabel: 'header.nav_report',             icon: '🚩', href: '/report', spa: false}
       ]
     },

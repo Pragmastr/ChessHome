@@ -1,0 +1,658 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Обновления — Chess Home</title>
+<meta name="description" content="Журнал обновлений Chess Home: что нового на шахматной платформе за каждый месяц.">
+<link rel="canonical" href="https://chesshome.pro/changelog">
+<link rel="stylesheet" href="/css/main.css">
+<link rel="icon" type="image/png" href="/img/logo/favicon.png">
+<script src="/js/utils.js"></script>
+<script src="/js/i18n.js"></script>
+<style>
+  [hidden] { display: none !important; }
+  .cl-wrap { max-width: 860px; margin: 0 auto; padding: 28px 16px 96px; }
+
+  .cl-hero { margin-bottom: 22px; }
+  .cl-hero h1 { margin: 0 0 6px; font-size: 30px; line-height: 1.2; }
+  .cl-hero p  { margin: 0; color: var(--text-secondary, #a0a0b0); }
+
+  /* ── Кнопки ── */
+  .cl-btn {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 8px 14px; border-radius: 8px; cursor: pointer;
+    border: 1px solid var(--border, rgba(255,255,255,.14));
+    background: rgba(255,255,255,.04); color: inherit; font: inherit; font-size: 14px;
+    transition: background .15s, border-color .15s, opacity .15s;
+  }
+  .cl-btn:hover { background: rgba(255,255,255,.09); }
+  .cl-btn:disabled { opacity: .5; cursor: default; }
+  .cl-btn.primary { background: var(--accent, #d4af37); border-color: var(--accent, #d4af37); color: #14161b; font-weight: 600; }
+  .cl-btn.primary:hover { filter: brightness(1.08); }
+  .cl-btn.danger:hover { background: rgba(255,80,80,.15); border-color: rgba(255,80,80,.5); }
+
+  /* ── Редактор владельца ── */
+  #cl-toolbar { margin-bottom: 16px; }
+  #cl-editor {
+    margin-bottom: 20px; padding: 18px; border-radius: 12px;
+    background: var(--bg-card, #171a20); border: 1px solid var(--border, rgba(255,255,255,.1));
+  }
+  .cl-ed-row { display: flex; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+  .cl-input, .cl-textarea {
+    width: 100%; box-sizing: border-box; padding: 10px 12px; border-radius: 8px;
+    border: 1px solid var(--border, rgba(255,255,255,.14)); background: rgba(0,0,0,.25);
+    color: inherit; font: inherit;
+  }
+  .cl-input:focus, .cl-textarea:focus { outline: none; border-color: var(--accent, #d4af37); }
+  .cl-ed-title { flex: 1 1 260px; }
+  .cl-ed-date  { flex: 0 0 170px; }
+  .cl-textarea { min-height: 280px; resize: vertical; font-family: var(--font-mono, ui-monospace, Consolas, monospace); font-size: 14px; line-height: 1.5; }
+  .cl-ed-tabs { display: flex; gap: 6px; margin-bottom: 8px; }
+  .cl-tab { padding: 5px 12px; border-radius: 6px; border: 1px solid transparent; background: none; color: var(--text-secondary, #a0a0b0); cursor: pointer; font: inherit; font-size: 13px; }
+  .cl-tab.active { color: inherit; border-color: var(--border, rgba(255,255,255,.18)); background: rgba(255,255,255,.06); }
+  .cl-preview { min-height: 280px; padding: 12px 14px; border-radius: 8px; border: 1px dashed var(--border, rgba(255,255,255,.18)); }
+  .cl-ed-hint { font-size: 12px; color: var(--text-secondary, #a0a0b0); margin: 8px 0 12px; }
+  .cl-ed-actions { display: flex; gap: 8px; align-items: center; }
+  .cl-ed-count { margin-left: auto; font-size: 12px; color: var(--text-secondary, #a0a0b0); }
+
+  /* ── Карточка записи (аккордеон) ── */
+  .cl-entry {
+    margin-bottom: 12px; border-radius: 12px; overflow: hidden;
+    background: var(--bg-card, #171a20); border: 1px solid var(--border, rgba(255,255,255,.1));
+    transition: border-color .2s;
+  }
+  .cl-entry:hover { border-color: rgba(212,175,55,.35); }
+  .cl-head {
+    width: 100%; display: flex; align-items: center; gap: 12px; padding: 16px 18px;
+    background: none; border: 0; color: inherit; font: inherit; text-align: left; cursor: pointer;
+  }
+  .cl-head:focus-visible { outline: 2px solid var(--accent, #d4af37); outline-offset: -2px; }
+  .cl-arrow { font-size: 12px; color: var(--text-secondary, #a0a0b0); transition: transform .2s ease; flex: 0 0 auto; }
+  .cl-entry.open .cl-arrow { transform: rotate(90deg); color: var(--accent, #d4af37); }
+  .cl-title { font-size: 18px; font-weight: 600; flex: 0 1 auto; min-width: 0; overflow-wrap: anywhere; }
+  .cl-meta { margin-left: auto; display: flex; gap: 14px; font-size: 13px; color: var(--text-secondary, #a0a0b0); white-space: nowrap; flex: 0 0 auto; }
+
+  /* Самая свежая запись «горит» */
+  .cl-entry.is-latest {
+    border-color: rgba(212,175,55,.55);
+    box-shadow: 0 0 0 1px rgba(212,175,55,.15), 0 0 26px rgba(212,175,55,.16);
+    animation: clGlow 3.4s ease-in-out infinite;
+  }
+  @keyframes clGlow {
+    0%, 100% { box-shadow: 0 0 0 1px rgba(212,175,55,.15), 0 0 16px rgba(212,175,55,.10); }
+    50%      { box-shadow: 0 0 0 1px rgba(212,175,55,.32), 0 0 38px rgba(212,175,55,.30); }
+  }
+  .cl-new {
+    padding: 2px 8px; border-radius: 99px; font-size: 11px; font-weight: 700; letter-spacing: .06em;
+    background: var(--accent, #d4af37); color: #14161b; animation: clPulse 1.8s ease-in-out infinite;
+  }
+  @keyframes clPulse { 0%, 100% { opacity: 1; } 50% { opacity: .6; } }
+
+  .cl-body { display: none; padding: 4px 20px 20px; border-top: 1px solid var(--border, rgba(255,255,255,.08)); }
+  .cl-entry.open .cl-body { display: block; animation: clFade .25s ease; }
+  @keyframes clFade { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+  .cl-loading, .cl-empty { padding: 18px 0; color: var(--text-secondary, #a0a0b0); text-align: center; }
+  .cl-edited { margin-top: 10px; font-size: 12px; color: var(--text-secondary, #a0a0b0); }
+
+  .cl-admin { display: flex; gap: 8px; justify-content: flex-end; padding-top: 12px; }
+  .cl-admin .cl-btn { padding: 5px 10px; font-size: 13px; }
+
+  /* ── Markdown ── */
+  .cl-md { line-height: 1.65; overflow-wrap: anywhere; }
+  .cl-md > :first-child { margin-top: 14px; }
+  .cl-md h1, .cl-md h2, .cl-md h3, .cl-md h4 { margin: 1.4em 0 .5em; line-height: 1.3; }
+  .cl-md h1 { font-size: 24px; } .cl-md h2 { font-size: 20px; } .cl-md h3 { font-size: 17px; }
+  .cl-md p { margin: .7em 0; }
+  .cl-md ul, .cl-md ol { padding-left: 1.4em; margin: .6em 0; }
+  .cl-md li { margin: .25em 0; }
+  .cl-md a { color: var(--accent, #d4af37); }
+  .cl-md code { padding: 1px 6px; border-radius: 5px; background: rgba(255,255,255,.08); font-size: .92em; }
+  .cl-md pre { padding: 12px 14px; border-radius: 8px; background: rgba(0,0,0,.35); overflow-x: auto; }
+  .cl-md pre code { padding: 0; background: none; }
+  .cl-md blockquote { margin: .8em 0; padding: 4px 14px; border-left: 3px solid var(--accent, #d4af37); color: var(--text-secondary, #a0a0b0); }
+  .cl-md hr { border: 0; border-top: 1px solid var(--border, rgba(255,255,255,.12)); margin: 1.4em 0; }
+  .cl-md img { max-width: 100%; border-radius: 8px; }
+  .cl-md table { border-collapse: collapse; display: block; overflow-x: auto; }
+  .cl-md th, .cl-md td { padding: 6px 10px; border: 1px solid var(--border, rgba(255,255,255,.14)); }
+
+  /* ── Реакции ── */
+  .cl-reacts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 18px; align-items: center; }
+  .cl-react {
+    display: inline-flex; align-items: center; gap: 6px; padding: 5px 11px; border-radius: 99px; cursor: pointer;
+    border: 1px solid var(--border, rgba(255,255,255,.14)); background: rgba(255,255,255,.04);
+    color: inherit; font: inherit; font-size: 15px; transition: transform .12s, background .15s, border-color .15s;
+  }
+  .cl-react b { font-size: 13px; font-weight: 600; min-width: 8px; }
+  .cl-react:hover { background: rgba(255,255,255,.1); transform: translateY(-1px); }
+  .cl-react.mine { border-color: var(--accent, #d4af37); background: rgba(212,175,55,.16); }
+  .cl-react-hint { font-size: 12px; color: var(--text-secondary, #a0a0b0); }
+
+  /* ── Комментарии ── */
+  .cl-comments { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border, rgba(255,255,255,.08)); }
+  .cl-ctoggle { background: none; border: 0; padding: 0; color: inherit; font: inherit; font-size: 14px; cursor: pointer; }
+  .cl-ctoggle:hover { color: var(--accent, #d4af37); }
+  .cl-cbox { margin-top: 12px; }
+  .cl-c { padding: 10px 0; border-bottom: 1px solid var(--border, rgba(255,255,255,.06)); }
+  .cl-c-head { display: flex; gap: 10px; align-items: baseline; font-size: 13px; }
+  .cl-c-head a { font-weight: 600; color: inherit; text-decoration: none; }
+  .cl-c-head a:hover { color: var(--accent, #d4af37); }
+  .cl-c-time { color: var(--text-secondary, #a0a0b0); }
+  .cl-c-del { margin-left: auto; background: none; border: 0; cursor: pointer; color: var(--text-secondary, #a0a0b0); font-size: 13px; }
+  .cl-c-del:hover { color: #ff6b6b; }
+  .cl-c-text { margin-top: 4px; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.5; }
+  .cl-cform { margin-top: 12px; }
+  .cl-cform .cl-textarea { min-height: 70px; font-family: inherit; font-size: 14px; }
+  .cl-cform-row { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+  .cl-cform-row .cl-ed-count { margin-left: auto; }
+  .cl-login-hint { margin-top: 12px; padding: 12px; border-radius: 8px; background: rgba(255,255,255,.04); font-size: 14px; color: var(--text-secondary, #a0a0b0); }
+
+  /* ── Тост ── */
+  #cl-toast {
+    position: fixed; left: 50%; bottom: 28px; transform: translate(-50%, 20px); z-index: 99999;
+    padding: 11px 18px; border-radius: 10px; background: #23262e; border: 1px solid rgba(255,255,255,.15);
+    color: #fff; font-size: 14px; opacity: 0; pointer-events: none; transition: opacity .2s, transform .2s; max-width: 90vw;
+  }
+  #cl-toast.show { opacity: 1; transform: translate(-50%, 0); }
+  #cl-toast.err  { border-color: rgba(255,90,90,.6); }
+
+  @media (max-width: 600px) {
+    .cl-hero h1 { font-size: 24px; }
+    .cl-head { flex-wrap: wrap; padding: 14px; }
+    .cl-meta { margin-left: 24px; flex: 1 1 100%; gap: 12px; }
+    .cl-body { padding: 4px 14px 16px; }
+    .cl-ed-date { flex: 1 1 100%; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .cl-entry.is-latest, .cl-new, .cl-entry.open .cl-body { animation: none; }
+    .cl-arrow, .cl-react { transition: none; }
+  }
+</style>
+</head>
+<body>
+
+<main class="cl-wrap">
+  <header class="cl-hero">
+    <h1 id="cl-h1">Обновления</h1>
+    <p id="cl-sub">Что нового на Chess Home — по месяцам</p>
+  </header>
+
+  <div id="cl-toolbar" hidden></div>
+  <section id="cl-editor" hidden></section>
+
+  <section id="cl-list" aria-live="polite">
+    <div class="cl-loading">Загрузка…</div>
+  </section>
+</main>
+
+<div id="cl-toast" role="status" aria-live="polite"></div>
+
+<script src="/js/vendor/marked.min.js"></script>
+<script src="/js/vendor/purify.min.js"></script>
+<script src="/js/header.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  // Публиковать может только владелец (сервер проверяет это отдельно — здесь лишь показ кнопок)
+  const OWNER = 'chesshome';
+  const EMOJIS = ['👍', '❤️', '🔥', '😂', '🤯'];
+
+  // ── Тексты (RU/EN) ───────────────────────────────────────────
+  const I18N = {
+    ru: {
+      h1: 'Обновления', sub: 'Что нового на Chess Home — по месяцам', title: 'Обновления — Chess Home',
+      loading: 'Загрузка…', loadError: 'Не удалось загрузить обновления. Попробуйте обновить страницу.',
+      empty: 'Пока здесь пусто — первое обновление скоро появится.', new: 'НОВОЕ',
+      views: 'Просмотры', comments: 'Комментарии', commentsN: 'Комментарии', edited: 'Изменено',
+      loginToReact: 'Войдите, чтобы ставить реакции', loginToComment: 'Войдите, чтобы оставить комментарий.',
+      login: 'Войти', needLogin: 'Нужно войти в аккаунт',
+      write: 'Напишите комментарий…', send: 'Отправить', sending: 'Отправка…', more: 'Показать ещё', noComments: 'Комментариев пока нет — будьте первым!',
+      delComment: 'Удалить', confirmDelComment: 'Удалить комментарий?',
+      newEntry: 'Новая запись', edit: 'Править', delete: 'Удалить',
+      confirmDelete: 'Удалить это обновление вместе с реакциями и комментариями? Это нельзя отменить.',
+      edTitleNew: 'Новая запись', edTitleEdit: 'Редактирование записи',
+      edTitle: 'Название (например, Сентябрь 2026)', edDate: 'Дата', edText: 'Текст (Markdown)',
+      write_: 'Писать', preview: 'Предпросмотр', publish: 'Опубликовать', save: 'Сохранить', cancel: 'Отмена',
+      hint: 'Markdown: ## Заголовок · - пункт списка · **жирный** · *курсив* · [текст](https://…) · > цитата',
+      published: 'Опубликовано', saved: 'Сохранено', deleted: 'Удалено', copied: 'Ссылка скопирована', error: 'Ошибка',
+      emptyPreview: 'Нечего показывать — введите текст.',
+    },
+    en: {
+      h1: 'Changelog', sub: 'What\'s new on Chess Home — month by month', title: 'Changelog — Chess Home',
+      loading: 'Loading…', loadError: 'Could not load the changelog. Please refresh the page.',
+      empty: 'Nothing here yet — the first update is coming soon.', new: 'NEW',
+      views: 'Views', comments: 'Comments', commentsN: 'Comments', edited: 'Edited',
+      loginToReact: 'Log in to react', loginToComment: 'Log in to leave a comment.',
+      login: 'Log in', needLogin: 'Please log in first',
+      write: 'Write a comment…', send: 'Send', sending: 'Sending…', more: 'Show more', noComments: 'No comments yet — be the first!',
+      delComment: 'Delete', confirmDelComment: 'Delete this comment?',
+      newEntry: 'New entry', edit: 'Edit', delete: 'Delete',
+      confirmDelete: 'Delete this update together with its reactions and comments? This cannot be undone.',
+      edTitleNew: 'New entry', edTitleEdit: 'Edit entry',
+      edTitle: 'Title (e.g. September 2026)', edDate: 'Date', edText: 'Text (Markdown)',
+      write_: 'Write', preview: 'Preview', publish: 'Publish', save: 'Save', cancel: 'Cancel',
+      hint: 'Markdown: ## Heading · - list item · **bold** · *italic* · [text](https://…) · > quote',
+      published: 'Published', saved: 'Saved', deleted: 'Deleted', copied: 'Link copied', error: 'Error',
+      emptyPreview: 'Nothing to preview — type some text.',
+    },
+  };
+  const lang = () => ((document.documentElement.lang || 'ru').slice(0, 2) === 'en' ? 'en' : 'ru');
+  const tr = (k) => (I18N[lang()][k] !== undefined ? I18N[lang()][k] : I18N.ru[k]) || k;
+
+  // ── Утилиты ──────────────────────────────────────────────────
+  const $ = (sel, root = document) => root.querySelector(sel);
+  const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const locale = () => (lang() === 'en' ? 'en-GB' : 'ru-RU');
+  const fmtDate = (ms) => new Date(ms).toLocaleDateString(locale(), { day: 'numeric', month: 'long', year: 'numeric' });
+  const fmtDateTime = (ms) => new Date(ms).toLocaleString(locale(), { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+
+  let toastTimer = null;
+  function toast(msg, isErr) {
+    const el = $('#cl-toast');
+    el.textContent = msg;
+    el.classList.toggle('err', !!isErr);
+    el.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => el.classList.remove('show'), 3200);
+  }
+
+  async function api(url, opts) {
+    opts = opts || {};
+    const init = { credentials: 'same-origin', method: opts.method || 'GET', headers: {} };
+    if (opts.body !== undefined) { init.headers['Content-Type'] = 'application/json'; init.body = JSON.stringify(opts.body); }
+    const r = await fetch(url, init);
+    let data = null;
+    try { data = await r.json(); } catch (_) {}
+    if (!r.ok) {
+      const e = new Error((data && data.error) || ('HTTP ' + r.status));
+      e.status = r.status;
+      throw e;
+    }
+    return data;
+  }
+
+  // Markdown → безопасный HTML (DOMPurify). Если библиотеки не загрузились — просто текст.
+  if (window.DOMPurify) {
+    DOMPurify.addHook('afterSanitizeAttributes', (node) => {
+      if (node.tagName === 'A') { node.setAttribute('target', '_blank'); node.setAttribute('rel', 'noopener noreferrer nofollow'); }
+    });
+  }
+  function md(src) {
+    if (window.marked && window.DOMPurify) {
+      return DOMPurify.sanitize(marked.parse(String(src || ''), { gfm: true, breaks: true }), { ADD_ATTR: ['target'] });
+    }
+    return '<p style="white-space:pre-wrap">' + esc(src) + '</p>';
+  }
+
+  // ── Состояние ────────────────────────────────────────────────
+  const S = { me: null, isOwner: false, entries: [], editingId: null };
+
+  function needLogin() {
+    toast(tr('needLogin'), true);
+    if (window.CH && typeof CH.openAuthModal === 'function') CH.openAuthModal('login');
+  }
+  function isAdminLike() { return !!(S.me && (S.isOwner || S.me.role === 'admin')); }
+
+  // ── Старт ────────────────────────────────────────────────────
+  async function boot() {
+    document.title = tr('title');
+    $('#cl-h1').textContent = tr('h1');
+    $('#cl-sub').textContent = tr('sub');
+
+    try {
+      const r = await fetch('/api/me', { credentials: 'same-origin' });
+      if (r.ok) S.me = await r.json();
+    } catch (_) {}
+    S.isOwner = !!(S.me && String(S.me.username || '').toLowerCase() === OWNER);
+    renderToolbar();
+    await loadList();
+  }
+
+  async function loadList(focusId) {
+    const list = $('#cl-list');
+    try {
+      const d = await api('/api/changelog');
+      S.entries = d.entries || [];
+      list.innerHTML = '';
+      if (!S.entries.length) { list.innerHTML = '<div class="cl-empty">' + esc(tr('empty')) + '</div>'; return; }
+
+      S.entries.forEach((entry, i) => list.appendChild(buildEntry(entry, i === 0)));
+
+      // Самая свежая запись открыта всегда; если в адресе есть #id (или только что
+      // сохранили запись) — дополнительно раскрываем её и прокручиваем к ней.
+      const hashId = (location.hash || '').replace('#', '');
+      const target = S.entries.find(e => e.id === (focusId || hashId));
+      await openEntry(S.entries[0]);
+      if (target && target !== S.entries[0]) await openEntry(target);
+      if (target) target.el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    } catch (e) {
+      list.innerHTML = '<div class="cl-empty">' + esc(tr('loadError')) + '</div>';
+    }
+  }
+
+  // ── Карточка записи ──────────────────────────────────────────
+  function buildEntry(entry, isLatest) {
+    const el = document.createElement('article');
+    el.className = 'cl-entry' + (isLatest ? ' is-latest' : '');
+    el.id = 'e-' + entry.id;
+    el.innerHTML =
+      '<button type="button" class="cl-head" aria-expanded="false">' +
+        '<span class="cl-arrow" aria-hidden="true">▶</span>' +
+        '<span class="cl-title">' + esc(entry.title) + '</span>' +
+        (isLatest ? '<span class="cl-new">' + esc(tr('new')) + '</span>' : '') +
+        '<span class="cl-meta"></span>' +
+      '</button>' +
+      '<div class="cl-body"></div>';
+    entry.el = el;
+    $('.cl-head', el).addEventListener('click', () => toggleEntry(entry));
+    updateMeta(entry);
+    return el;
+  }
+
+  function updateMeta(entry) {
+    $('.cl-meta', entry.el).innerHTML =
+      '<span title="' + esc(tr('published')) + '">📅 ' + esc(fmtDate(entry.publishedAt)) + '</span>' +
+      '<span title="' + esc(tr('views')) + '">👁 ' + entry.views + '</span>' +
+      '<span title="' + esc(tr('comments')) + '">💬 ' + entry.comments + '</span>';
+  }
+
+  function toggleEntry(entry) {
+    if (entry.el.classList.contains('open')) closeEntry(entry);
+    else { openEntry(entry); history.replaceState(null, '', '#' + entry.id); }
+  }
+  function closeEntry(entry) {
+    entry.el.classList.remove('open');
+    $('.cl-head', entry.el).setAttribute('aria-expanded', 'false');
+  }
+
+  async function openEntry(entry) {
+    const el = entry.el, body = $('.cl-body', el);
+    el.classList.add('open');
+    $('.cl-head', el).setAttribute('aria-expanded', 'true');
+
+    if (entry.content === undefined) {                    // текст старых месяцев подгружаем при раскрытии
+      body.innerHTML = '<div class="cl-loading">' + esc(tr('loading')) + '</div>';
+      try {
+        const full = await api('/api/changelog/' + entry.id);
+        Object.assign(entry, { content: full.content, views: full.views, comments: full.comments, reactions: full.reactions, myEmoji: full.myEmoji, updatedAt: full.updatedAt });
+        updateMeta(entry);
+      } catch (e) {
+        body.innerHTML = '<div class="cl-empty">' + esc(tr('loadError')) + '</div>';
+        return;
+      }
+    }
+    if (!entry.rendered) { renderBody(entry); entry.rendered = true; }
+    registerView(entry);
+  }
+
+  // Просмотр считается только с аккаунта и один раз на запись (сервер тоже это проверяет)
+  function registerView(entry) {
+    if (!S.me || entry.viewSent) return;
+    entry.viewSent = true;
+    api('/api/changelog/' + entry.id + '/view', { method: 'POST' })
+      .then(r => { entry.views = r.views; updateMeta(entry); })
+      .catch(() => { entry.viewSent = false; });
+  }
+
+  function renderBody(entry) {
+    const body = $('.cl-body', entry.el);
+    body.innerHTML =
+      (S.isOwner
+        ? '<div class="cl-admin">' +
+            '<button type="button" class="cl-btn" data-act="edit">✏️ ' + esc(tr('edit')) + '</button>' +
+            '<button type="button" class="cl-btn danger" data-act="del">🗑 ' + esc(tr('delete')) + '</button>' +
+          '</div>'
+        : '') +
+      '<div class="cl-md"></div>' +
+      (entry.updatedAt ? '<div class="cl-edited">' + esc(tr('edited')) + ': ' + esc(fmtDate(entry.updatedAt)) + '</div>' : '') +
+      '<div class="cl-reacts"></div>' +
+      '<div class="cl-comments"><button type="button" class="cl-ctoggle"></button><div class="cl-cbox" hidden></div></div>';
+
+    $('.cl-md', body).innerHTML = md(entry.content);
+    renderReactions(entry);
+    renderCommentsToggle(entry);
+
+    const edit = $('[data-act="edit"]', body), del = $('[data-act="del"]', body);
+    if (edit) edit.addEventListener('click', () => openEditor(entry));
+    if (del) del.addEventListener('click', () => deleteEntry(entry));
+  }
+
+  // ── Реакции ──────────────────────────────────────────────────
+  function renderReactions(entry) {
+    const box = $('.cl-reacts', entry.el);
+    box.innerHTML = '';
+    EMOJIS.forEach(em => {
+      const n = (entry.reactions && entry.reactions[em]) || 0;
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'cl-react' + (entry.myEmoji === em ? ' mine' : '');
+      b.innerHTML = '<span>' + em + '</span><b>' + (n || '') + '</b>';
+      b.addEventListener('click', () => react(entry, em, b));
+      box.appendChild(b);
+    });
+    if (!S.me) {
+      const h = document.createElement('span');
+      h.className = 'cl-react-hint';
+      h.textContent = tr('loginToReact');
+      box.appendChild(h);
+    }
+  }
+
+  async function react(entry, emoji, btn) {
+    if (!S.me) { needLogin(); return; }
+    btn.disabled = true;
+    try {
+      const r = await api('/api/changelog/' + entry.id + '/reactions', { method: 'POST', body: { emoji } });
+      entry.reactions = r.counts || {};
+      entry.myEmoji = r.myEmoji;
+      renderReactions(entry);
+    } catch (e) {
+      toast(e.message, true);
+      btn.disabled = false;
+    }
+  }
+
+  // ── Комментарии ──────────────────────────────────────────────
+  function renderCommentsToggle(entry) {
+    const root = $('.cl-comments', entry.el);
+    const btn = $('.cl-ctoggle', root), box = $('.cl-cbox', root);
+    const label = () => '💬 ' + tr('commentsN') + ' (' + entry.comments + ') ' + (box.hidden ? '▾' : '▴');
+    btn.textContent = label();
+    btn.addEventListener('click', async () => {
+      box.hidden = !box.hidden;
+      btn.textContent = label();
+      if (!box.hidden && !entry.cLoaded) {
+        entry.cLoaded = true;
+        buildCommentsBox(entry, box);
+        await loadComments(entry, 1);
+      }
+      btn.textContent = label();
+    });
+    entry._refreshCommentsLabel = () => { btn.textContent = label(); };
+  }
+
+  function buildCommentsBox(entry, box) {
+    box.innerHTML =
+      '<div class="cl-clist"></div>' +
+      '<button type="button" class="cl-btn cl-cmore" hidden>' + esc(tr('more')) + '</button>' +
+      (S.me
+        ? '<div class="cl-cform">' +
+            '<textarea class="cl-textarea" maxlength="500" placeholder="' + esc(tr('write')) + '"></textarea>' +
+            '<div class="cl-cform-row"><button type="button" class="cl-btn primary cl-csend">' + esc(tr('send')) + '</button>' +
+            '<span class="cl-ed-count">0 / 500</span></div>' +
+          '</div>'
+        : '<div class="cl-login-hint">' + esc(tr('loginToComment')) + ' <button type="button" class="cl-btn cl-clogin">' + esc(tr('login')) + '</button></div>');
+
+    const ta = $('.cl-textarea', box), send = $('.cl-csend', box), more = $('.cl-cmore', box), login = $('.cl-clogin', box);
+    if (login) login.addEventListener('click', needLogin);
+    more.addEventListener('click', () => loadComments(entry, entry.cPage + 1));
+    if (ta) {
+      const count = $('.cl-ed-count', box);
+      ta.addEventListener('input', () => { count.textContent = ta.value.length + ' / 500'; });
+      ta.addEventListener('keydown', (ev) => { if ((ev.ctrlKey || ev.metaKey) && ev.key === 'Enter') send.click(); });
+      send.addEventListener('click', () => postComment(entry, box, ta, send));
+    }
+  }
+
+  async function loadComments(entry, page) {
+    const box = $('.cl-cbox', entry.el), list = $('.cl-clist', box), more = $('.cl-cmore', box);
+    try {
+      const d = await api('/api/changelog/' + entry.id + '/comments?page=' + page);
+      entry.cPage = d.page;
+      entry.cTotalPages = d.totalPages;
+      if (page === 1) list.innerHTML = '';
+      d.comments.forEach(c => list.appendChild(commentEl(entry, c)));
+      if (!list.children.length) list.innerHTML = '<div class="cl-empty">' + esc(tr('noComments')) + '</div>';
+      more.hidden = d.page >= d.totalPages;
+    } catch (e) {
+      toast(e.message, true);
+    }
+  }
+
+  function commentEl(entry, c) {
+    const div = document.createElement('div');
+    div.className = 'cl-c';
+    const canDel = !!(S.me && (String(S.me.username).toLowerCase() === String(c.username).toLowerCase() || isAdminLike()));
+    div.innerHTML =
+      '<div class="cl-c-head">' +
+        '<a href="/profile/' + encodeURIComponent(c.username) + '">' + esc(c.username) + '</a>' +
+        '<span class="cl-c-time">' + esc(fmtDateTime(c.createdAt)) + '</span>' +
+        (canDel ? '<button type="button" class="cl-c-del" title="' + esc(tr('delComment')) + '">✕</button>' : '') +
+      '</div>' +
+      '<div class="cl-c-text"></div>';
+    $('.cl-c-text', div).textContent = c.content;          // только текст — никакого HTML
+    const del = $('.cl-c-del', div);
+    if (del) del.addEventListener('click', async () => {
+      if (!confirm(tr('confirmDelComment'))) return;
+      try {
+        await api('/api/changelog/comments/' + c.id + '/delete', { method: 'POST' });
+        div.remove();
+        entry.comments = Math.max(0, entry.comments - 1);
+        updateMeta(entry);
+        if (entry._refreshCommentsLabel) entry._refreshCommentsLabel();
+      } catch (e) { toast(e.message, true); }
+    });
+    return div;
+  }
+
+  async function postComment(entry, box, ta, send) {
+    const text = ta.value.trim();
+    if (!text) return;
+    send.disabled = true; send.textContent = tr('sending');
+    try {
+      const c = await api('/api/changelog/' + entry.id + '/comments', { method: 'POST', body: { content: text } });
+      const list = $('.cl-clist', box);
+      const empty = $('.cl-empty', list); if (empty) empty.remove();
+      list.appendChild(commentEl(entry, c));
+      ta.value = ''; $('.cl-ed-count', box).textContent = '0 / 500';
+      entry.comments += 1;
+      updateMeta(entry);
+      if (entry._refreshCommentsLabel) entry._refreshCommentsLabel();
+    } catch (e) {
+      toast(e.message, true);
+    } finally {
+      send.disabled = false; send.textContent = tr('send');
+    }
+  }
+
+  // ── Редактор (только владелец) ───────────────────────────────
+  function renderToolbar() {
+    const bar = $('#cl-toolbar');
+    if (!S.isOwner) { bar.hidden = true; return; }
+    bar.hidden = false;
+    bar.innerHTML = '<button type="button" class="cl-btn primary" id="cl-new">＋ ' + esc(tr('newEntry')) + '</button>';
+    $('#cl-new').addEventListener('click', () => openEditor(null));
+  }
+
+  function openEditor(entry) {
+    if (!S.isOwner) return;
+    S.editingId = entry ? entry.id : null;
+    const ed = $('#cl-editor');
+    ed.hidden = false;
+    const today = new Date(entry ? entry.publishedAt : Date.now());
+    const dateVal = today.getFullYear() + '-' + String(today.getMonth() + 1).padStart(2, '0') + '-' + String(today.getDate()).padStart(2, '0');
+
+    ed.innerHTML =
+      '<h2 style="margin:0 0 12px;font-size:18px">' + esc(entry ? tr('edTitleEdit') : tr('edTitleNew')) + '</h2>' +
+      '<div class="cl-ed-row">' +
+        '<input class="cl-input cl-ed-title" id="cl-ed-title" maxlength="100" placeholder="' + esc(tr('edTitle')) + '">' +
+        '<input class="cl-input cl-ed-date" id="cl-ed-date" type="date" title="' + esc(tr('edDate')) + '" value="' + dateVal + '">' +
+      '</div>' +
+      '<div class="cl-ed-tabs">' +
+        '<button type="button" class="cl-tab active" data-tab="write">' + esc(tr('write_')) + '</button>' +
+        '<button type="button" class="cl-tab" data-tab="preview">' + esc(tr('preview')) + '</button>' +
+      '</div>' +
+      '<textarea class="cl-textarea" id="cl-ed-text" maxlength="30000" placeholder="' + esc(tr('edText')) + '"></textarea>' +
+      '<div class="cl-preview cl-md" id="cl-ed-preview" hidden></div>' +
+      '<div class="cl-ed-hint">' + esc(tr('hint')) + '</div>' +
+      '<div class="cl-ed-actions">' +
+        '<button type="button" class="cl-btn primary" id="cl-ed-save">' + esc(entry ? tr('save') : tr('publish')) + '</button>' +
+        '<button type="button" class="cl-btn" id="cl-ed-cancel">' + esc(tr('cancel')) + '</button>' +
+        '<span class="cl-ed-count" id="cl-ed-count">0 / 30000</span>' +
+      '</div>';
+
+    const title = $('#cl-ed-title'), text = $('#cl-ed-text'), prev = $('#cl-ed-preview'), count = $('#cl-ed-count');
+    title.value = entry ? entry.title : '';
+    text.value = entry ? (entry.content || '') : '';
+    count.textContent = text.value.length + ' / 30000';
+    text.addEventListener('input', () => { count.textContent = text.value.length + ' / 30000'; });
+
+    ed.querySelectorAll('.cl-tab').forEach(tab => tab.addEventListener('click', () => {
+      ed.querySelectorAll('.cl-tab').forEach(t => t.classList.toggle('active', t === tab));
+      const showPrev = tab.dataset.tab === 'preview';
+      text.hidden = showPrev; prev.hidden = !showPrev;
+      if (showPrev) prev.innerHTML = text.value.trim() ? md(text.value) : '<p style="color:var(--text-secondary,#a0a0b0)">' + esc(tr('emptyPreview')) + '</p>';
+    }));
+
+    $('#cl-ed-cancel').addEventListener('click', closeEditor);
+    $('#cl-ed-save').addEventListener('click', saveEditor);
+    ed.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    title.focus();
+  }
+
+  function closeEditor() {
+    S.editingId = null;
+    const ed = $('#cl-editor');
+    ed.hidden = true; ed.innerHTML = '';
+  }
+
+  async function saveEditor() {
+    const btn = $('#cl-ed-save');
+    const title = $('#cl-ed-title').value.trim();
+    const content = $('#cl-ed-text').value.trim();
+    const dateStr = $('#cl-ed-date').value;
+    if (!title || !content) { toast(tr('error') + ': ' + tr('edTitle') + ' / ' + tr('edText'), true); return; }
+
+    // Полдень выбранной даты — чтобы часовой пояс не «сдвигал» день
+    const publishedAt = dateStr ? new Date(dateStr + 'T12:00:00').getTime() : Date.now();
+    const editing = S.editingId;
+    btn.disabled = true;
+    try {
+      const r = editing
+        ? await api('/api/changelog/' + editing + '/update', { method: 'POST', body: { title, content, publishedAt } })
+        : await api('/api/changelog', { method: 'POST', body: { title, content, publishedAt } });
+      toast(editing ? tr('saved') : tr('published'));
+      closeEditor();
+      await loadList(editing || r.id);
+    } catch (e) {
+      toast(e.message, true);
+      btn.disabled = false;
+    }
+  }
+
+  async function deleteEntry(entry) {
+    if (!confirm(tr('confirmDelete'))) return;
+    try {
+      await api('/api/changelog/' + entry.id + '/delete', { method: 'POST' });
+      toast(tr('deleted'));
+      history.replaceState(null, '', location.pathname);
+      await loadList();
+    } catch (e) { toast(e.message, true); }
+  }
+
+  boot();
+})();
+</script>
+</body>
+</html>

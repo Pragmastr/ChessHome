@@ -663,6 +663,10 @@ const SUGGESTED_QUESTIONS = [
 ];
 
 
+// Кому уходят вопросы по кнопке «Отправить разработчикам» — личные сообщения владельцу сайта.
+// Ник один раз здесь, а не в ссылке, чтобы его было легко найти и поменять.
+const DEV_INBOX_USER = 'ChessHome';
+
 function findAnswer(userText) {
   const norm = normalizeText(userText);
   const encodedQuery = encodeURIComponent('Добавьте этот вопрос в базу Chesshome AI: ' + userText || '');
@@ -670,7 +674,7 @@ function findAnswer(userText) {
   
   const dynamicAction = {
     label: 'Отправить разработчикам →',
-    href: `http://chesshome.pro/inbox/shahmati_23?input=${encodedQuery}`
+    href: `/inbox/${encodeURIComponent(DEV_INBOX_USER)}?input=${encodedQuery}`
   };
   
   if (!norm) {

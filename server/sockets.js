@@ -42,6 +42,7 @@ const {
   // сами партию не завершают.
   endGameAuthoritative,
   findSocketByUsername,
+  db,
   emitToAdmins,
   tryPairTournamentPlayers,
   FIRST_MOVE_TIMEOUT,
@@ -728,16 +729,40 @@ function chatMessageHasBadWords(text) {
     if (socket._lastChatAt && now - socket._lastChatAt < 1500) { socket.emit('error', 'Не так быстро!'); return; }
     socket._lastChatAt = now;
 
-    const user = await getUser(socket.username.toLowerCase());
-    if (!user || user.banned) { socket.emit('auth_error', 'Сессия недействительна'); socket.disconnect(); return; }
+    const _lowName = socket.username.toLowerCase();
+    let user = await getUser(_lowName);
 
-    if (global.chatBans) {
-      const unbanAt = global.chatBans.get(socket.username.toLowerCase());
+    // Источник истины по бану — БД, а не кэш: если бан выставили в обход кэша
+    // (прямой UPDATE / другой объект), кэш ещё хранит banned=false.
+    try {
+      const fr = await db('SELECT banned, ban_reason, shadow_banned FROM users WHERE username_low = $1', [_lowName]);
+      const row = fr.rows[0];
+      if (!row) user = null;
+      else if (user) {
+        user.banned = !!row.banned;
+        user.banReason = row.ban_reason || null;
+        user.shadowBanned = !!row.shadow_banned;
+      }
+    } catch (e) { console.error('[global_chat ban recheck]', e.message); }
+
+    const _devId = parseCookieHeader(socket.handshake.headers.cookie).ch_device_id;
+    if (!user || user.banned || bannedIPs.has(socketIP) || (_devId && bannedDevices.has(_devId))) {
+      socket.emit('banned', { reason: user?.banReason || 'Аккаунт заблокирован' });
+      const _all = findSocketByUsername(socket.username);
+      if (_all) _all.disconnect(); else socket.disconnect(true);
+      return;
+    }
+
+    // Чат-бан на время (хранится в global.chatBans: username_low -> timestamp окончания)
+    if (!global.chatBans) global.chatBans = new Map();
+    {
+      const unbanAt = global.chatBans.get(_lowName);
       if (unbanAt && unbanAt > now) {
         const minsLeft = Math.ceil((unbanAt - now) / 60000);
+        socket.emit('chat_banned', { until: unbanAt });
         socket.emit('error', `Вы забанены в чате ещё ${minsLeft} мин. Читайте правила платформы.`);
         return;
-      } else if (unbanAt) { global.chatBans.delete(socket.username.toLowerCase()); }
+      } else if (unbanAt) { global.chatBans.delete(_lowName); }
     }
 
     const chatHardBan = async (reason) => {

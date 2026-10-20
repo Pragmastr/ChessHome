@@ -455,6 +455,21 @@ async function saveUser(u) {
       u.bio || '', u.fshrRating ?? null, u.fideRating ?? null,
       u.vipUntil ?? null, u.shadowBanned || false, u.shadowBanReason || null,
       JSON.stringify(u.badges || [])]);
+
+  // ── Бан должен действовать СРАЗУ ──
+  // 1) кэш пользователей синхронизируем с тем, что только что записали в БД,
+  //    иначе проверки getUser() продолжат видеть старый banned=false;
+  // 2) у забаненного рвём все открытые сокеты (иначе он продолжает писать в чат).
+  try {
+    cacheUser(u);
+    if (u.banned) {
+      const sock = findSocketByUsername(u.username);
+      if (sock) {
+        sock.emit('banned', { reason: u.banReason || 'Нарушение правил' });
+        sock.disconnect();
+      }
+    }
+  } catch (e) { console.error('[saveUser ban-kick]', e.message); }
 }
 
 

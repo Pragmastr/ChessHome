@@ -651,7 +651,7 @@
       font-size: 13px;
       color: var(--text-muted, #888);
       margin-bottom: 12px;
-    } 
+    }
 
     /* ── BOTTOM NAV BAR ─────────────────────────────────── */
     #bottom-nav {
@@ -1221,6 +1221,12 @@
     .puzzle-lb-rank { font-size: 12px; font-weight: 800; color: var(--text-muted); min-width: 22px; text-align: right; }
     .puzzle-lb-name { flex: 1; font-weight: 600; font-size: 13px; }
     .puzzle-lb-rating { font-size: 13px; font-weight: 700; color: var(--accent); }
+    .pz-lb-tabs { display:flex; gap:6px; padding:10px 12px; border-bottom:1px solid var(--border); background:var(--bg-secondary); }
+    .pz-lb-tab { flex:1; border:1px solid var(--border); background:transparent; color:var(--text-muted); font-weight:700; font-size:12px; padding:7px 8px; border-radius:8px; cursor:pointer; transition:.12s; font-family:inherit; }
+    .pz-lb-tab:hover { color:var(--text); }
+    .pz-lb-tab.active { background:var(--accent); border-color:var(--accent); color:#000; }
+    .pz-lb-hint { padding:8px 16px; font-size:11px; color:var(--text-muted); border-bottom:1px solid var(--border); }
+    .pz-lb-old { font-size:10px; font-weight:700; color:var(--text-muted); border:1px solid var(--border); border-radius:6px; padding:1px 5px; margin-left:6px; vertical-align:middle; }
     /* mobile puzzles */
     @media (max-width: 768px) {
       .center{
@@ -1628,7 +1634,7 @@
           <span class="accent" data-i18n="home.hero_title_accent">Побеждай.</span>
         </h1>
         <p class="hero-subtitle" data-i18n="home.hero_subtitle">
-          Chess Home — это шахматная платформа с интеллектуальным анализом Stockfish, 
+          Chess Home — это шахматная платформа с интеллектуальным анализом Stockfish,
           удобным редактором позиций и онлайн-игрой в реальном времени.
           Только на русском, только для лучших.
         </p>
@@ -2644,6 +2650,7 @@
         <div style="min-width:230px;max-width:260px;width:100%" id="puzzles-sidebar">
           <h2 style="font-size:17px;font-weight:800;margin-bottom:14px" data-i18n="puzzles.top_players">🏅 Топ игроков</h2>
           <div class="lobby-panel" style="padding:0;overflow:hidden">
+            <div class="pz-lb-tabs" data-pz-lb-tabs><button type="button" class="pz-lb-tab" data-mode="new">New Rating system</button><button type="button" class="pz-lb-tab" data-mode="all">New + Old Rating system</button></div>
             <div id="puzzle-leaderboard-mini" style="max-height:340px;overflow-y:auto">
               <div style="padding:16px;color:var(--text-muted);font-size:13px;text-align:center" data-i18n="puzzles.loading">Загрузка...</div>
             </div>
@@ -2729,6 +2736,8 @@
       <button class="btn btn-ghost btn-sm" style="margin-bottom:14px" onclick="showPage('puzzles')" data-i18n="puzzles.back">← Назад</button>
       <div class="page-header"><h1 data-i18n="puzzles.leaderboard_title">🏅 Рейтинг задач</h1><p data-i18n="puzzles.leaderboard_subtitle">Топ игроков по решению тактических задач</p></div>
       <div class="lobby-panel" style="padding:0;overflow:hidden">
+        <div class="pz-lb-tabs" data-pz-lb-tabs><button type="button" class="pz-lb-tab" data-mode="new">New Rating system</button><button type="button" class="pz-lb-tab" data-mode="all">New + Old Rating system</button></div>
+        <div class="pz-lb-hint" id="pz-lb-hint"></div>
         <div id="puzzle-leaderboard-full">
           <div style="padding:20px;text-align:center;color:var(--text-muted);font-size:13px" data-i18n="puzzles.loading">Загрузка...</div>
         </div>
@@ -2789,11 +2798,104 @@
 <script src="/socket.io/socket.io.js"></script>
 <script src="/js/vendor/chess.js"></script>
 <script src="/js/chess-engine.js"></script>
+<script>
+/* Рейтинг задач: режим вкладки подмешивается в запрос лидерборда (app.js не трогаем) */
+window.__pzLbMode = (function(){ try { return localStorage.getItem('pzLbMode') === 'all' ? 'all' : 'new'; } catch(e){ return 'new'; } })();
+(function(){
+  var _fetch = window.fetch;
+  window.fetch = function(input, init){
+    try {
+      var url = typeof input === 'string' ? input : (input && input.url);
+      if (url && /\/api\/puzzles\/leaderboard(\?|$)/.test(url) && url.indexOf('system=') === -1) {
+        if (window.__pzLbMode === 'new') {
+          url += (url.indexOf('?') === -1 ? '?' : '&') + 'system=new';
+          input = typeof input === 'string' ? url : new Request(url, input);
+        }
+      }
+    } catch(e){}
+    return _fetch.call(this, input, init);
+  };
+})();
+</script>
 <script src="/js/app.js"></script>
 <script src="/js/ping-widget.js"></script>
 <script src="/js/board.js"></script>
 <script src="/js/stockfish-ui.js"></script>
 <script src="/js/editor.js"></script>
+<script>
+/* Рейтинг задач: вкладки «New Rating system» / «New + Old Rating system» */
+(function(){
+  var en = /^en/i.test(document.documentElement.lang || '');
+  var T = {
+    hintNew: en ? 'Only players rated under the new Glicko-2 system.' : 'Только игроки с рейтингом по новой системе (Glicko-2).',
+    hintAll: en ? 'All players: new and old rating systems together.' : 'Все игроки: новая и старая системы рейтинга вместе.',
+    empty:   en ? 'No players yet' : 'Пока нет игроков',
+    err:     en ? 'Failed to load' : 'Не удалось загрузить',
+    old:     en ? 'old' : 'старый',
+    solved:  en ? 'solved' : 'решено'
+  };
+  function esc(v){ return String(v==null?'':v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}); }
+  var reqId = 0;
+
+  function row(r, i){
+    var medal = r.rank===1?'🥇':r.rank===2?'🥈':r.rank===3?'🥉':r.rank;
+    var oldTag = (window.__pzLbMode==='all' && r.oldSystem) ? '<span class="pz-lb-old" title="'+esc(T.old)+'">'+esc(T.old)+'</span>' : '';
+    return '<div class="puzzle-lb-row" onclick="location.href=\'/profile/'+encodeURIComponent(r.username)+'\'">'
+      + '<span class="puzzle-lb-rank">'+medal+'</span>'
+      + '<span class="puzzle-lb-name">'+esc(r.username)+oldTag+'</span>'
+      + '<span style="font-size:11px;color:var(--text-muted)">'+(r.puzzleSolved||0)+' '+esc(T.solved)+'</span>'
+      + '<span class="puzzle-lb-rating">'+(r.puzzleRating||1200)+'</span></div>';
+  }
+
+  function render(){
+    var mode = window.__pzLbMode;
+    var id = ++reqId;
+    var mini = document.getElementById('puzzle-leaderboard-mini');
+    var full = document.getElementById('puzzle-leaderboard-full');
+    var hint = document.getElementById('pz-lb-hint');
+    if (hint) hint.textContent = mode==='new' ? T.hintNew : T.hintAll;
+    fetch('/api/puzzles/leaderboard' + (mode==='new' ? '?system=new' : '?system=all'), { credentials:'same-origin' })
+      .then(function(r){ if(!r.ok) throw 0; return r.json(); })
+      .then(function(list){
+        if (id !== reqId) return;
+        var html = list.length ? list.map(row).join('') : '<div style="padding:20px;text-align:center;color:var(--text-muted);font-size:13px">'+esc(T.empty)+'</div>';
+        if (full) full.innerHTML = html;
+        if (mini) mini.innerHTML = list.length ? list.slice(0,20).map(row).join('') : html;
+      })
+      .catch(function(){
+        if (id !== reqId) return;
+        var m = '<div style="padding:20px;text-align:center;color:var(--text-muted);font-size:13px">'+esc(T.err)+'</div>';
+        if (full) full.innerHTML = m; if (mini) mini.innerHTML = m;
+      });
+  }
+
+  function syncTabs(){
+    document.querySelectorAll('[data-pz-lb-tabs] .pz-lb-tab').forEach(function(b){
+      b.classList.toggle('active', b.dataset.mode === window.__pzLbMode);
+    });
+  }
+
+  document.addEventListener('click', function(e){
+    var b = e.target.closest && e.target.closest('[data-pz-lb-tabs] .pz-lb-tab');
+    if (!b) return;
+    window.__pzLbMode = b.dataset.mode;
+    try { localStorage.setItem('pzLbMode', window.__pzLbMode); } catch(_){}
+    syncTabs(); render();
+  });
+
+  /* При открытии страниц с рейтингом подгружаем актуальный режим */
+  var _show = window.showPage;
+  if (typeof _show === 'function') {
+    window.showPage = function(name){
+      var out = _show.apply(this, arguments);
+      if (name === 'puzzles' || name === 'puzzle-leaderboard') { syncTabs(); setTimeout(render, 50); }
+      return out;
+    };
+  }
+  syncTabs();
+})();
+</script>
+
 <script>
 // ── HERO ANIMATED CHESS BOARD ───────────────────────────────
 (function() {
@@ -3801,8 +3903,8 @@ function nextOnboardSlide() {
           <div style="font-size:14px; background: rgba(255,255,255,0.05); padding: 10px; border-radius: 4px; margin-bottom: 12px; word-wrap: break-word;">
             ${escapeHtml(r.details)}
           </div>
-          ${r.status === 'new' 
-            ? `<button class="btn btn-secondary btn-sm" onclick="closeReport('${r.id}')">Пометить как "Проверено"</button>` 
+          ${r.status === 'new'
+            ? `<button class="btn btn-secondary btn-sm" onclick="closeReport('${r.id}')">Пометить как "Проверено"</button>`
             : `<span style="color:#2ecc71; font-size:13px;">Проверено администратором: ${escapeHtml(r.reviewedBy)}</span>`
           }
         </div>
